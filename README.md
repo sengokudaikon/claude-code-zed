@@ -1,5 +1,7 @@
 # Claude Code Zed Extension
 
+**⚠️ Project Temporarily Paused** - See [Current Status](#current-status) for details.
+
 A Zed extension that integrates with Claude Code CLI for AI-assisted coding directly in your Zed editor.
 
 ## Features
@@ -83,6 +85,35 @@ zed --foreground
 3. Make your changes
 4. Test with Zed
 5. Submit a pull request
+
+## Current Status
+
+**⚠️ Project Temporarily Paused**
+
+This project has been temporarily paused due to fundamental limitations in the WebAssembly (WASM) runtime environment that Zed extensions operate within:
+
+### WASM Limitations Encountered
+
+1. **WebSocket Restrictions**: WASM environments have limited networking capabilities, making it difficult to create the WebSocket server required for the Claude Code protocol
+2. **File System Access**: Limited filesystem access in WASM prevents proper lock file management and workspace interaction
+3. **Runtime Constraints**: The sandboxed nature of WASM extensions restricts the low-level system operations needed for IDE integration
+
+### Technical Challenges
+
+The Claude Code protocol requires:
+- Creating a WebSocket server on localhost
+- Writing lock files to `~/.claude/ide/`
+- Managing environment variables
+- Direct filesystem access for workspace detection
+
+These operations are not readily available or are severely restricted in Zed's WASM extension environment.
+
+### Future Considerations
+
+Potential paths forward:
+- Wait for enhanced WASM capabilities in Zed
+- Explore alternative integration methods
+- Consider a native extension approach if Zed adds support
 
 ## License
 
