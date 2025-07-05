@@ -25,7 +25,7 @@ This extension implements the Claude Code protocol as documented in the [claudec
 
 1. **WebSocket Server**: Creates a WebSocket server on a random port (10000-65535)
 2. **Lock File**: Writes a discovery file to `~/.claude/ide/[port].lock` with connection details
-3. **Environment Variables**: Sets `CLAUDE_CODE_SSE_PORT` and `ENABLE_IDE_INTEGRATION` 
+3. **Environment Variables**: Sets `CLAUDE_CODE_SSE_PORT` and `ENABLE_IDE_INTEGRATION`
 4. **Authentication**: Uses UUID-based token authentication via WebSocket headers
 5. **Message Protocol**: Implements JSON-RPC 2.0 over WebSocket for bidirectional communication
 
@@ -63,9 +63,18 @@ The extension automatically:
 
 This extension is built with:
 - Rust and WebAssembly for the core logic
-- Tokio for async WebSocket handling
 - Zed Extension API for editor integration
 - Serde for JSON serialization
+- UUID for authentication token generation
+
+### Debugging & Logs
+
+The extension includes comprehensive logging for development:
+
+```bash
+# Run Zed in foreground mode to see extension logs
+zed --foreground
+```
 
 ## Contributing
 
