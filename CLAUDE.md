@@ -52,3 +52,17 @@ This is a **Zed editor extension** that implements the Claude Code protocol for 
 - Authentication tokens are UUID v4 generated per session
 - Lock files contain process IDs for cleanup
 - All file operations should validate paths and permissions
+
+## Git Commit Convention
+
+- Use emoji first to indicate commit type:
+  - 🎉 `:tada:` - Initial commit or major feature
+  - ✨ `:sparkles:` - New feature
+  - 🐛 `:bug:` - Bug fix
+  - 🔧 `:wrench:` - Configuration changes
+  - 📝 `:memo:` - Documentation
+  - 🚀 `:rocket:` - Performance improvements
+  - 🎨 `:art:` - Code style/formatting
+  - ♻️ `:recycle:` - Refactoring
+  - 🔥 `:fire:` - Remove code/files
+  - 📦 `:package:` - Add dependencies/submodules
