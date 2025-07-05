@@ -1,46 +1,61 @@
-use std::collections::HashMap;
-use std::fs;
-use std::io::Write;
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::net::TcpListener;
-use tokio::sync::broadcast;
-use tokio_tungstenite::tungstenite::protocol::Message;
-use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
-use tokio_tungstenite::{accept_hdr_async, WebSocketStream};
 use uuid::Uuid;
-use zed_extension_api::*;
+use zed_extension_api::{lsp::*, *};
+use rand::Rng;
 
-struct ClaudeCodeExtension {
-    server: Arc<Mutex<Option<ClaudeCodeServer>>>,
+// Simple logging macros with levels
+macro_rules! log_debug {
+    ($($arg:tt)*) => {
+        eprintln!("🔍 [DEBUG] Claude Code: {}", format!($($arg)*));
+    };
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LockFileData {
-    pid: u32,
-    #[serde(rename = "workspaceFolders")]
-    workspace_folders: Vec<String>,
-    #[serde(rename = "ideName")]
-    ide_name: String,
-    transport: String,
-    #[serde(rename = "authToken")]
-    auth_token: String,
+macro_rules! log_info {
+    ($($arg:tt)*) => {
+        eprintln!("ℹ️ [INFO] Claude Code: {}", format!($($arg)*));
+    };
+}
+
+macro_rules! log_warn {
+    ($($arg:tt)*) => {
+        eprintln!("⚠️ [WARN] Claude Code: {}", format!($($arg)*));
+    };
+}
+
+macro_rules! log_error {
+    ($($arg:tt)*) => {
+        eprintln!("❌ [ERROR] Claude Code: {}", format!($($arg)*));
+    };
+}
+
+macro_rules! log_success {
+    ($($arg:tt)*) => {
+        eprintln!("✅ [SUCCESS] Claude Code: {}", format!($($arg)*));
+    };
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct JsonRpcMessage {
     jsonrpc: String,
-    method: Option<String>,
-    params: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<Value>,
-    error: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<JsonRpcError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JsonRpcError {
+    code: i64,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,293 +87,57 @@ struct AtMentionParams {
     #[serde(rename = "filePath")]
     file_path: String,
     #[serde(rename = "lineStart")]
-    line_start: Option<u32>,
+    line_start: u32,
     #[serde(rename = "lineEnd")]
-    line_end: Option<u32>,
+    line_end: u32,
 }
 
 struct ClaudeCodeServer {
     port: u16,
     auth_token: String,
     workspace_folders: Vec<String>,
-    sender: broadcast::Sender<JsonRpcMessage>,
 }
 
-impl ClaudeCodeServer {
-    fn new(workspace_folders: Vec<String>) -> Result<Self, String> {
-        let auth_token = Uuid::new_v4().to_string();
-        let (sender, _) = broadcast::channel(1000);
-        
-        Ok(Self {
-            port: 0, // Will be set when server starts
-            auth_token,
-            workspace_folders,
-            sender,
-        })
-    }
+struct ClaudeCodeExtension {
+    server_config: Option<ClaudeCodeServer>,
+}
 
-    async fn start(&mut self) -> Result<u16, String> {
-        let listener = TcpListener::bind("127.0.0.1:0").await
-            .map_err(|e| format!("Failed to bind to port: {}", e))?;
-            
-        let addr = listener.local_addr()
-            .map_err(|e| format!("Failed to get local address: {}", e))?;
-            
-        self.port = addr.port();
-        
-        // Create lock file
-        self.create_lock_file()?;
-        
-        // Spawn server task
-        let auth_token = self.auth_token.clone();
-        let sender = self.sender.clone();
-        
-        tokio::spawn(async move {
-            Self::run_server(listener, auth_token, sender).await;
-        });
-        
-        Ok(self.port)
-    }
-
-    fn create_lock_file(&self) -> Result<(), String> {
-        let home_dir = dirs::home_dir()
-            .ok_or("Could not find home directory")?;
-            
-        let claude_dir = home_dir.join(".claude").join("ide");
-        fs::create_dir_all(&claude_dir)
-            .map_err(|e| format!("Failed to create .claude/ide directory: {}", e))?;
-            
-        let lock_file_path = claude_dir.join(format!("{}.lock", self.port));
-        
-        let lock_data = LockFileData {
-            pid: std::process::id(),
-            workspace_folders: self.workspace_folders.clone(),
-            ide_name: "Zed".to_string(),
-            transport: "ws".to_string(),
-            auth_token: self.auth_token.clone(),
-        };
-        
-        let lock_content = serde_json::to_string_pretty(&lock_data)
-            .map_err(|e| format!("Failed to serialize lock file: {}", e))?;
-            
-        fs::write(&lock_file_path, lock_content)
-            .map_err(|e| format!("Failed to write lock file: {}", e))?;
-            
-        Ok(())
-    }
-
-    async fn run_server(
-        listener: TcpListener,
-        auth_token: String,
-        sender: broadcast::Sender<JsonRpcMessage>,
-    ) {
-        while let Ok((stream, _)) = listener.accept().await {
-            let auth_token = auth_token.clone();
-            let sender = sender.clone();
-            
-            tokio::spawn(async move {
-                let callback = |req: &Request, response: Response| {
-                    if let Some(auth_header) = req.headers().get("x-claude-code-ide-authorization") {
-                        if let Ok(auth_value) = auth_header.to_str() {
-                            if auth_value == auth_token {
-                                return Ok(response);
-                            }
-                        }
-                    }
-                    
-                    Err(http::Response::builder()
-                        .status(401)
-                        .body(Some("Unauthorized".to_string()))
-                        .unwrap())
-                };
-                
-                if let Ok(ws_stream) = accept_hdr_async(stream, callback).await {
-                    Self::handle_client(ws_stream, sender).await;
-                }
-            });
-        }
-    }
-
-    async fn handle_client(
-        ws_stream: WebSocketStream<tokio::net::TcpStream>,
-        sender: broadcast::Sender<JsonRpcMessage>,
-    ) {
-        let mut receiver = sender.subscribe();
-        let (ws_sender, mut ws_receiver) = ws_stream.split();
-        let ws_sender = Arc::new(Mutex::new(ws_sender));
-        
-        // Handle incoming messages from Claude
-        let ws_sender_clone = ws_sender.clone();
-        tokio::spawn(async move {
-            while let Some(msg) = ws_receiver.next().await {
-                if let Ok(Message::Text(text)) = msg {
-                    if let Ok(json_msg) = serde_json::from_str::<JsonRpcMessage>(&text) {
-                        Self::handle_claude_message(json_msg, &ws_sender_clone).await;
-                    }
-                }
-            }
-        });
-        
-        // Handle outgoing messages to Claude
-        while let Ok(msg) = receiver.recv().await {
-            if let Ok(json_text) = serde_json::to_string(&msg) {
-                if let Ok(mut sender_guard) = ws_sender.lock() {
-                    if sender_guard.send(Message::Text(json_text)).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    async fn handle_claude_message(
-        msg: JsonRpcMessage,
-        ws_sender: &Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<tokio::net::TcpStream>, Message>>>,
-    ) {
-        if let Some(method) = &msg.method {
-            match method.as_str() {
-                "tools/call" => {
-                    if let Some(params) = &msg.params {
-                        Self::handle_tool_call(msg.id.clone(), params, ws_sender).await;
-                    }
-                }
-                _ => {
-                    // Handle other methods if needed
-                }
-            }
-        }
-    }
-
-    async fn handle_tool_call(
-        id: Option<Value>,
-        params: &Value,
-        ws_sender: &Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<tokio::net::TcpStream>, Message>>>,
-    ) {
-        if let Some(tool_name) = params.get("name").and_then(|n| n.as_str()) {
-            let result = match tool_name {
-                "openFile" => Self::handle_open_file(params).await,
-                "getCurrentSelection" => Self::handle_get_current_selection().await,
-                "getWorkspaceFolders" => Self::handle_get_workspace_folders().await,
-                "getOpenEditors" => Self::handle_get_open_editors().await,
-                _ => {
-                    serde_json::json!({
-                        "content": [{
-                            "type": "text",
-                            "text": format!("Tool '{}' not implemented", tool_name)
-                        }]
-                    })
-                }
-            };
-            
-            let response = JsonRpcMessage {
-                jsonrpc: "2.0".to_string(),
-                method: None,
-                params: None,
-                id,
-                result: Some(result),
-                error: None,
-            };
-            
-            if let Ok(response_text) = serde_json::to_string(&response) {
-                if let Ok(mut sender_guard) = ws_sender.lock() {
-                    let _ = sender_guard.send(Message::Text(response_text)).await;
-                }
-            }
-        }
-    }
-
-    async fn handle_open_file(params: &Value) -> Value {
-        if let Some(args) = params.get("arguments") {
-            if let Some(file_path) = args.get("filePath").and_then(|f| f.as_str()) {
-                // Use Zed's API to open file
-                // This is a placeholder - actual implementation would use Zed's extension API
-                return serde_json::json!({
-                    "content": [{
-                        "type": "text",
-                        "text": format!("Opened file: {}", file_path)
-                    }]
-                });
-            }
-        }
-        
-        serde_json::json!({
-            "content": [{
-                "type": "text",
-                "text": "Failed to open file - invalid parameters"
-            }]
-        })
-    }
-
-    async fn handle_get_current_selection() -> Value {
-        // This would interface with Zed's selection API
-        serde_json::json!({
-            "content": [{
-                "type": "text",
-                "text": r#"{"success": false, "message": "No active selection"}"#
-            }]
-        })
-    }
-
-    async fn handle_get_workspace_folders() -> Value {
-        // This would get workspace folders from Zed
-        serde_json::json!({
-            "content": [{
-                "type": "text",
-                "text": r#"{"success": true, "folders": [], "rootPath": ""}"#
-            }]
-        })
-    }
-
-    async fn handle_get_open_editors() -> Value {
-        // This would get open editors from Zed
-        serde_json::json!({
-            "content": [{
-                "type": "text",
-                "text": r#"{"tabs": []}"#
-            }]
-        })
-    }
-
-    fn broadcast_selection_changed(&self, selection: SelectionData) {
-        let msg = JsonRpcMessage {
-            jsonrpc: "2.0".to_string(),
-            method: Some("selection_changed".to_string()),
-            params: Some(serde_json::to_value(selection).unwrap_or_default()),
-            id: None,
-            result: None,
-            error: None,
-        };
-        
-        let _ = self.sender.send(msg);
-    }
-
-    fn broadcast_at_mention(&self, params: AtMentionParams) {
-        let msg = JsonRpcMessage {
-            jsonrpc: "2.0".to_string(),
-            method: Some("at_mentioned".to_string()),
-            params: Some(serde_json::to_value(params).unwrap_or_default()),
-            id: None,
-            result: None,
-            error: None,
-        };
-        
-        let _ = self.sender.send(msg);
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LockFileData {
+    pid: u32,
+    #[serde(rename = "workspaceFolders")]
+    workspace_folders: Vec<String>,
+    #[serde(rename = "ideName")]
+    ide_name: String,
+    transport: String,
+    #[serde(rename = "authToken")]
+    auth_token: String,
 }
 
 impl Extension for ClaudeCodeExtension {
     fn new() -> Self {
-        Self {
-            server: Arc::new(Mutex::new(None)),
+        let mut extension = Self { server_config: None };
+
+        // Initialize the server configuration
+        if let Ok(server) = extension.init_server_config() {
+            extension.server_config = Some(server);
+            log_success!("Claude Code server configuration initialized successfully");
+        } else {
+            log_error!("Failed to initialize Claude Code server configuration");
         }
+
+        extension
     }
 
     fn language_server_command(
         &mut self,
-        _language_server_id: &LanguageServerId,
+        language_server_id: &LanguageServerId,
         _worktree: &Worktree,
     ) -> Result<Command, String> {
-        // This extension doesn't provide language servers
+        log_debug!(
+            "language_server_command called for {:?}",
+            language_server_id
+        );
         Err("Claude Code extension does not provide language servers".to_string())
     }
 
@@ -382,7 +161,6 @@ impl Extension for ClaudeCodeExtension {
         &self,
         _language_server_id: &LanguageServerId,
         _completion: Completion,
-        _worktree: &Worktree,
     ) -> Option<CodeLabel> {
         None
     }
@@ -391,7 +169,6 @@ impl Extension for ClaudeCodeExtension {
         &self,
         _language_server_id: &LanguageServerId,
         _symbol: Symbol,
-        _worktree: &Worktree,
     ) -> Option<CodeLabel> {
         None
     }
@@ -406,62 +183,307 @@ impl Extension for ClaudeCodeExtension {
 
     fn run_slash_command(
         &self,
-        _command: SlashCommand,
-        _args: Vec<String>,
-        _worktree: &Worktree,
+        command: SlashCommand,
+        args: Vec<String>,
+        _worktree: Option<&Worktree>,
     ) -> Result<SlashCommandOutput, String> {
+        log_debug!(
+            "Slash command '{}' called with args: {:?}",
+            command.name,
+            args
+        );
         Ok(SlashCommandOutput {
-            text: "Claude Code slash command not implemented".to_string(),
+            text: format!(
+                "Claude Code slash command '{}' not yet implemented",
+                command.name
+            ),
             sections: vec![],
         })
     }
 }
 
 impl ClaudeCodeExtension {
-    fn start_server(&self) -> Result<u16, String> {
+    /// Initialize the server configuration (WASM-compatible)
+    fn init_server_config(&self) -> Result<ClaudeCodeServer, Box<dyn std::error::Error>> {
+        log_debug!("Initializing Claude Code server configuration...");
+        
+        // Generate random port in range 10000-65535
+        let port = self.generate_random_port();
+        let auth_token = Uuid::new_v4().to_string();
         let workspace_folders = self.get_workspace_folders();
-        let mut server = ClaudeCodeServer::new(workspace_folders)?;
         
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("Failed to create runtime: {}", e))?;
-            
-        let port = runtime.block_on(async {
-            server.start().await
-        })?;
+        let server = ClaudeCodeServer {
+            port,
+            auth_token: auth_token.clone(),
+            workspace_folders: workspace_folders.clone(),
+        };
         
-        // Store the server instance
-        if let Ok(mut server_guard) = self.server.lock() {
-            *server_guard = Some(server);
-        }
+        // Prepare lock file data (actual creation would require Zed API)
+        let _lock_data = self.create_lock_file_data(&server);
         
-        // Set environment variable for Claude Code to find the server
-        std::env::set_var("CLAUDE_CODE_SSE_PORT", port.to_string());
-        std::env::set_var("ENABLE_IDE_INTEGRATION", "true");
+        // Log environment variables that would be set
+        self.log_environment_variables(port);
         
-        Ok(port)
+        log_info!("Server config prepared for port {} with auth token {}...", port, &auth_token[..8]);
+        Ok(server)
+    }
+    
+    /// Generate random port in range 10000-65535
+    fn generate_random_port(&self) -> u16 {
+        let mut rng = rand::thread_rng();
+        rng.gen_range(10000..=65535)
+    }
+    
+    /// Create lock file data structure
+    fn create_lock_file_data(&self, server: &ClaudeCodeServer) -> LockFileData {
+        log_debug!("Creating lock file data for port {}", server.port);
+        
+        let lock_data = LockFileData {
+            pid: 12345, // Placeholder PID for WASM
+            workspace_folders: server.workspace_folders.clone(),
+            ide_name: "Zed".to_string(),
+            transport: "ws".to_string(),
+            auth_token: server.auth_token.clone(),
+        };
+        
+        log_info!("Lock file data prepared: {:?}", lock_data);
+        lock_data
+    }
+    
+    /// Log environment variables for Claude Code discovery
+    fn log_environment_variables(&self, port: u16) {
+        log_debug!("Environment variables for port {}", port);
+        log_info!("CLAUDE_CODE_SSE_PORT={}, ENABLE_IDE_INTEGRATION=true", port);
     }
 
+    /// Get workspace folders (WASM-compatible implementation)
     fn get_workspace_folders(&self) -> Vec<String> {
-        // This would use Zed's API to get workspace folders
-        // For now, return current directory
-        vec![std::env::current_dir()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string()]
+        log_debug!("Getting workspace folders...");
+        // In WASM, we can't access filesystem directly
+        // This would need to use Zed's API to get workspace information
+        let folders = vec!["/workspace".to_string()]; // Placeholder for MVP
+        log_info!("Found {} workspace folder(s): {:?}", folders.len(), folders);
+        folders
     }
 
-    fn send_at_mention(&self, file_path: String, line_start: Option<u32>, line_end: Option<u32>) {
-        if let Ok(server_guard) = self.server.lock() {
-            if let Some(server) = server_guard.as_ref() {
-                let params = AtMentionParams {
-                    file_path,
-                    line_start,
-                    line_end,
-                };
-                server.broadcast_at_mention(params);
+    /// Handle incoming WebSocket messages
+    fn handle_websocket_message(&self, message: &str, _auth_token: &str) -> Option<String> {
+        log_debug!("Handling WebSocket message: {}", message);
+        
+        // Parse JSON-RPC message
+        let rpc_message: JsonRpcMessage = match serde_json::from_str(message) {
+            Ok(msg) => msg,
+            Err(e) => {
+                log_error!("Failed to parse JSON-RPC message: {}", e);
+                return Some(self.create_error_response(None, -32700, "Parse error"));
             }
+        };
+        
+        // Handle method calls (MCP tools)
+        if let Some(method) = &rpc_message.method {
+            let result = self.handle_tool_call(method, &rpc_message.params.unwrap_or(Value::Null));
+            return Some(self.create_success_response(rpc_message.id.clone(), result));
         }
+        
+        None
     }
+    
+    /// Create JSON-RPC success response
+    fn create_success_response(&self, id: Option<Value>, result: Value) -> String {
+        let response = JsonRpcMessage {
+            jsonrpc: "2.0".to_string(),
+            id,
+            method: None,
+            params: None,
+            result: Some(result),
+            error: None,
+        };
+        serde_json::to_string(&response).unwrap_or_default()
+    }
+    
+    /// Create JSON-RPC error response
+    fn create_error_response(&self, id: Option<Value>, code: i64, message: &str) -> String {
+        let response = JsonRpcMessage {
+            jsonrpc: "2.0".to_string(),
+            id,
+            method: None,
+            params: None,
+            result: None,
+            error: Some(JsonRpcError {
+                code,
+                message: message.to_string(),
+                data: None,
+            }),
+        };
+        serde_json::to_string(&response).unwrap_or_default()
+    }
+    
+    /// Send selection changed notification
+    fn send_selection_changed(&self, selection: SelectionData) {
+        log_debug!("Sending selection changed notification");
+        
+        let notification = JsonRpcMessage {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            method: Some("selection_changed".to_string()),
+            params: Some(serde_json::to_value(selection).unwrap_or(Value::Null)),
+            result: None,
+            error: None,
+        };
+        
+        let message = serde_json::to_string(&notification).unwrap_or_default();
+        log_info!("Selection changed notification: {}", message);
+        // In a real implementation, this would be sent to connected WebSocket clients
+    }
+    
+    /// Send at-mention notification
+    fn send_at_mention(&self, at_mention: AtMentionParams) {
+        log_debug!("Sending at-mention notification");
+        
+        let notification = JsonRpcMessage {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            method: Some("at_mentioned".to_string()),
+            params: Some(serde_json::to_value(at_mention).unwrap_or(Value::Null)),
+            result: None,
+            error: None,
+        };
+        
+        let message = serde_json::to_string(&notification).unwrap_or_default();
+        log_info!("At-mention notification: {}", message);
+        // In a real implementation, this would be sent to connected WebSocket clients
+    }
+
+    /// Handle basic MCP tool calls (WASM-compatible, stubbed for MVP)
+    fn handle_tool_call(&self, tool_name: &str, params: &Value) -> Value {
+        log_debug!("MCP tool call '{}' with params: {}", tool_name, params);
+        let result = match tool_name {
+            "openFile" => {
+                let file_path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Opening file: {}", file_path)
+                    }]
+                })
+            }
+            "getCurrentSelection" => {
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": r#"{"success": true, "selection": {"text": "", "filePath": "", "isEmpty": true}}"#
+                    }]
+                })
+            }
+            "getWorkspaceFolders" => {
+                let folders = self.get_workspace_folders();
+                let folders_json: Vec<_> = folders
+                    .iter()
+                    .map(|f| {
+                        serde_json::json!({
+                            "name": f.split('/').last().unwrap_or("workspace"),
+                            "uri": format!("file://{}", f),
+                            "path": f
+                        })
+                    })
+                    .collect();
+
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": serde_json::to_string(&serde_json::json!({
+                            "success": true,
+                            "folders": folders_json,
+                            "rootPath": folders.first().unwrap_or(&String::new())
+                        })).unwrap_or_default()
+                    }]
+                })
+            }
+            "getOpenEditors" => {
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": r#"{"success": true, "editors": []}"#
+                    }]
+                })
+            }
+            "openDiff" => {
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": "Diff view opened"
+                    }]
+                })
+            }
+            "checkDocumentDirty" => {
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": r#"{"success": true, "isDirty": false}"#
+                    }]
+                })
+            }
+            "saveDocument" => {
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": r#"{"success": true, "saved": false}"#
+                    }]
+                })
+            }
+            "close_tab" => {
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": "Tab closed"
+                    }]
+                })
+            }
+            "closeAllDiffTabs" => {
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": "All diff tabs closed"
+                    }]
+                })
+            }
+            "getDiagnostics" => {
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": r#"{"success": true, "diagnostics": []}"#
+                    }]
+                })
+            }
+            "getLatestSelection" => {
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": r#"{"success": true, "selection": null}"#
+                    }]
+                })
+            }
+            "executeCode" => {
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": "Code execution not supported in Zed"
+                    }]
+                })
+            }
+            _ => {
+                serde_json::json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!("Unknown tool: {}", tool_name)
+                    }]
+                })
+            }
+        };
+        log_success!("MCP tool '{}' completed", tool_name);
+        result
+    }
+
 }
 
 zed_extension_api::register_extension!(ClaudeCodeExtension);

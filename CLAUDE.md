@@ -8,6 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 # Check for compilation errors
 cargo check
+
+# Build for WASM target (configured as default in .cargo/config.toml)
+cargo build --release
 ```
 
 ## Architecture Overview
