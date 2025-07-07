@@ -1,0 +1,18 @@
+id = "claude-code-zed"
+name = "Claude Code Zed"
+version = "0.1.0"
+schema_version = 1
+authors = ["isomo <jiahaoxiang2000@gmail.com>"]
+description = "Integration with Claude Code CLI for AI-assisted coding in Zed"
+repository = "https://github.com/jiahaoxiang2000/claude-code-zed"
+
+[language_servers.claude-code-server]
+name = "Claude Code Server"
+languages = ["Rust", "JavaScript", "TypeScript", "Python", "Markdown"]
+
+[language_servers.claude-code-server.language_ids]
+"Rust" = "rust"
+"JavaScript" = "javascript"
+"TypeScript" = "typescript"
+"Python" = "python"
+"Markdown" = "markdown"

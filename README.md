@@ -1,35 +1,105 @@
-# Claude Code Zed Extension
+# Claude Code Zed Integration
 
-**⚠️ Project Temporarily Paused** - See [Current Status](#current-status) for details.
+A two-part system that integrates Claude Code CLI with Zed editor for AI-assisted coding.
 
-A Zed extension that integrates with Claude Code CLI for AI-assisted coding directly in your Zed editor.
+## Architecture Overview
+
+This project consists of two components:
+
+### 1. Zed Extension (`claude-code-zed`)
+- **Purpose**: Zed editor integration and LSP communication
+- **Technology**: Rust compiled to WebAssembly
+- **Responsibilities**:
+  - Editor selection tracking
+  - File reference handling
+  - LSP server lifecycle management
+  - Communication with the companion server
+
+### 2. Claude Code Server (`claude-code-server`)
+- **Purpose**: WebSocket server for Claude Code CLI communication
+- **Technology**: Native Rust application
+- **Responsibilities**:
+  - WebSocket server on localhost
+  - Lock file management (`~/.claude/ide/[port].lock`)
+  - Authentication token handling
+  - JSON-RPC protocol implementation
+  - Bridging between Zed extension and Claude Code CLI
 
 ## Features
 
-- **WebSocket Integration**: Creates a WebSocket server that Claude Code can connect to
-- **Selection Tracking**: Sends selection changes to Claude Code in real-time
-- **At-Mention Support**: Send file references and code selections to Claude Code
-- **Lock File Management**: Automatically manages the discovery lock file for Claude Code
-- **Authentication**: Secure token-based authentication for Claude Code connections
+- **Seamless Integration**: Works within Zed's WASM extension environment
+- **WebSocket Communication**: Native server handles Claude Code protocol
+- **Selection Tracking**: Real-time selection changes sent to Claude Code
+- **At-Mention Support**: File references and code selections forwarded to Claude
+- **Secure Authentication**: Token-based authentication between components
+- **Protocol Compliance**: Full Claude Code protocol implementation
 
 ## Installation
 
-1. Clone this repository
-2. Build the extension:
+### Prerequisites
+- Rust toolchain installed
+- Zed editor
+- Claude Code CLI
+
+### Setup
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/your-repo/claude-code-zed
+   cd claude-code-zed
+   ```
+
+2. **Build the Zed extension**:
    ```bash
    cargo build --release
    ```
-3. Install in Zed by adding to your extensions directory
+
+3. **Install companion server** (separate repository):
+   ```bash
+   git clone https://github.com/your-repo/claude-code-server
+   cd claude-code-server
+   cargo install --path .
+   ```
+
+4. **Install Zed extension**:
+   - Copy the built extension to your Zed extensions directory
+   - Or use Zed's extension manager (when available)
 
 ## How It Works
 
-This extension implements the Claude Code protocol as documented in the [claudecode.nvim PROTOCOL.md](https://github.com/coder/claudecode.nvim/blob/main/PROTOCOL.md):
+The system implements the Claude Code protocol as documented in [claudecode.nvim PROTOCOL.md](https://github.com/coder/claudecode.nvim/blob/main/PROTOCOL.md):
 
-1. **WebSocket Server**: Creates a WebSocket server on a random port (10000-65535)
-2. **Lock File**: Writes a discovery file to `~/.claude/ide/[port].lock` with connection details
-3. **Environment Variables**: Sets `CLAUDE_CODE_SSE_PORT` and `ENABLE_IDE_INTEGRATION`
-4. **Authentication**: Uses UUID-based token authentication via WebSocket headers
-5. **Message Protocol**: Implements JSON-RPC 2.0 over WebSocket for bidirectional communication
+### Communication Flow
+
+1. **Zed Extension Startup**:
+   - Extension loads in Zed's WASM environment
+   - Establishes LSP connection to companion server
+   - Begins tracking editor selections and file changes
+
+2. **Companion Server Launch**:
+   - `claude-code-server` starts as native process
+   - Creates WebSocket server on random port (10000-65535)
+   - Writes discovery lock file to `~/.claude/ide/[port].lock`
+   - Sets environment variables (`CLAUDE_CODE_SSE_PORT`, `ENABLE_IDE_INTEGRATION`)
+
+3. **Claude Code Discovery**:
+   - Claude Code CLI discovers server via lock file
+   - Authenticates using UUID token from lock file
+   - Establishes WebSocket connection
+
+4. **Bidirectional Communication**:
+   - **Zed → Claude**: Selection changes, file references via LSP → Server → WebSocket
+   - **Claude → Zed**: MCP tool calls via WebSocket → Server → LSP → Extension
+
+### Component Interaction
+
+```
+Zed Editor (WASM)  ←→  LSP  ←→  Native Server  ←→  WebSocket  ←→  Claude Code CLI
+     │                              │
+     └── Selection tracking         └── Protocol implementation
+     └── File references            └── Lock file management
+     └── WASM-safe operations       └── Full system access
+```
 
 ## Protocol Implementation
 
@@ -38,44 +108,31 @@ This extension implements the Claude Code protocol as documented in the [claudec
 - `selection_changed`: Notifies Claude when text selection changes
 - `at_mentioned`: Sends file references and code selections to Claude
 
-### Messages from Claude Code to Zed
-
-The extension implements the following MCP tools:
-
-- `openFile`: Open files in Zed editor
-- `getCurrentSelection`: Get current text selection
-- `getWorkspaceFolders`: Get workspace folder information
-- `getOpenEditors`: Get list of open editor tabs
-
-## Configuration
-
-The extension automatically:
-- Detects workspace folders
-- Generates secure authentication tokens
-- Manages the WebSocket server lifecycle
-- Handles Claude Code connection state
-
-## Security
-
-- WebSocket server binds to localhost (127.0.0.1) only
-- Uses UUID-based authentication tokens
-- Validates authentication headers on connection
-
 ## Development
 
-This extension is built with:
-- Rust and WebAssembly for the core logic
-- Zed Extension API for editor integration
-- Serde for JSON serialization
-- UUID for authentication token generation
+### Zed Extension Stack
+- **Rust + WASM**: Core extension logic
+- **Zed Extension API**: Editor integration
+- **LSP Client**: Communication with companion server
+- **Serde**: JSON serialization
+
+### Companion Server Stack
+- **Native Rust**: Full system access
+- **Tokio**: Async runtime
+- **Tungstenite**: WebSocket implementation
+- **LSP Server**: Communication with Zed extension
+- **Serde**: JSON-RPC protocol handling
 
 ### Debugging & Logs
 
-The extension includes comprehensive logging for development:
+Both components include comprehensive logging:
 
 ```bash
 # Run Zed in foreground mode to see extension logs
 zed --foreground
+
+# Run companion server with debug logging
+RUST_LOG=debug claude-code-server
 ```
 
 ## Contributing
@@ -88,32 +145,33 @@ zed --foreground
 
 ## Current Status
 
-**⚠️ Project Temporarily Paused**
+**🚧 In Development**
 
-This project has been temporarily paused due to fundamental limitations in the WebAssembly (WASM) runtime environment that Zed extensions operate within:
+This project is actively being developed with a two-component architecture to overcome WASM limitations:
 
-### WASM Limitations Encountered
+### Completed
+- ✅ Zed extension architecture (WASM-compatible)
+- ✅ Protocol specification and design
+- ✅ Claude Code protocol research
 
-1. **WebSocket Restrictions**: WASM environments have limited networking capabilities, making it difficult to create the WebSocket server required for the Claude Code protocol
-2. **File System Access**: Limited filesystem access in WASM prevents proper lock file management and workspace interaction
-3. **Runtime Constraints**: The sandboxed nature of WASM extensions restricts the low-level system operations needed for IDE integration
+### In Progress
+- 🔄 LSP server implementation for Zed ↔ Server communication
+- 🔄 Native companion server development
+- 🔄 WebSocket protocol implementation
 
-### Technical Challenges
+### Planned
+- 📋 End-to-end integration testing
+- 📋 Authentication and security implementation
+- 📋 Error handling and resilience
+- 📋 Documentation and examples
 
-The Claude Code protocol requires:
-- Creating a WebSocket server on localhost
-- Writing lock files to `~/.claude/ide/`
-- Managing environment variables
-- Direct filesystem access for workspace detection
+### Architecture Benefits
 
-These operations are not readily available or are severely restricted in Zed's WASM extension environment.
-
-### Future Considerations
-
-Potential paths forward:
-- Wait for enhanced WASM capabilities in Zed
-- Explore alternative integration methods
-- Consider a native extension approach if Zed adds support
+This approach solves the WASM limitations by:
+- **WASM Extension**: Handles editor integration within Zed's sandbox
+- **Native Server**: Provides full system access for Claude Code protocol
+- **LSP Bridge**: Enables secure communication between components
+- **Separation of Concerns**: Each component focuses on its strengths
 
 ## License
 
