@@ -54,25 +54,6 @@
     - `lineStart`: Start line number
     - `lineEnd`: End line number
 
-### 🛠️ Claude → IDE Tool Calls (MCP Tools)
-- [x] **Essential Tools**
-  - ✅ `openFile` - Open file with optional text selection
-  - ✅ `getCurrentSelection` - Get current text selection
-  - ✅ `getWorkspaceFolders` - Return workspace information
-  - ✅ `getOpenEditors` - List currently open files/tabs
-
-- [x] **File Management Tools**
-  - ✅ `openDiff` - Open diff view (blocking operation)
-  - ✅ `checkDocumentDirty` - Check if document has unsaved changes
-  - ✅ `saveDocument` - Save document with unsaved changes
-  - ✅ `close_tab` - Close tab by name
-  - ✅ `closeAllDiffTabs` - Close all diff tabs
-
-- [x] **Advanced Tools**
-  - ✅ `getDiagnostics` - Get language server diagnostics
-  - ✅ `getLatestSelection` - Get most recent selection
-  - ✅ `executeCode` - Execute code in Jupyter kernel (not applicable for Zed)
-
 ## Phase 3: Production Polish
 
 ### 🛡️ Error Handling & Resilience

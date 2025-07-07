@@ -32,29 +32,9 @@ This is a **Zed editor extension** that implements the Claude Code protocol for 
 - **Authentication**: WebSocket header-based token validation (`x-claude-code-ide-authorization`)
 - **Message Types**: `selection_changed`, `at_mentioned` (Zed → Claude), and MCP tool calls (Claude → Zed)
 
-### Key Data Structures
+## Known Limitations
 
-- **LockFileData**: JSON structure for the discovery lock file
-- **JsonRpcMessage**: JSON-RPC 2.0 message wrapper for all communication
-- **SelectionData/AtMentionParams**: Selection and file reference data structures
-- **MCP Tool Handlers**: `openFile`, `getCurrentSelection`, `getWorkspaceFolders`, `getOpenEditors`
-
-### WebSocket Communication Flow
-
-1. Extension starts WebSocket server on random port
-2. Creates lock file with connection details and auth token
-3. Sets environment variables for Claude Code discovery
-4. Claude Code connects and authenticates via WebSocket headers
-5. Bidirectional JSON-RPC communication established
-6. Selection changes and file references are broadcast to Claude
-7. Claude can call MCP tools to interact with Zed editor
-
-### Security Considerations
-
-- WebSocket server **must** bind to localhost (127.0.0.1) only
-- Authentication tokens are UUID v4 generated per session
-- Lock files contain process IDs for cleanup
-- All file operations should validate paths and permissions
+- WASM incompatible extension run limitation: The WebAssembly compilation may restrict certain native Rust functionalities, potentially impacting the extension's full feature set
 
 ## Git Commit Convention
 
