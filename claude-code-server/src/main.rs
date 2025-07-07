@@ -1,11 +1,11 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing::{info, warn, error};
+use serde_json::Value;
 use std::path::PathBuf;
 use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
-use serde_json::Value;
+use tracing::{error, info, warn};
 
 #[derive(Parser)]
 #[command(name = "claude-code-server")]
@@ -13,11 +13,11 @@ use serde_json::Value;
 struct Cli {
     #[command(subcommand)]
     mode: Option<Mode>,
-    
+
     /// Enable debug logging
     #[arg(long, short)]
     debug: bool,
-    
+
     /// Worktree root path (for LSP mode)
     #[arg(long)]
     worktree: Option<PathBuf>,
@@ -51,27 +51,25 @@ enum Mode {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
     // Initialize logging
     let subscriber = tracing_subscriber::fmt()
-        .with_max_level(if cli.debug { 
-            tracing::Level::DEBUG 
-        } else { 
-            tracing::Level::INFO 
+        .with_max_level(if cli.debug {
+            tracing::Level::DEBUG
+        } else {
+            tracing::Level::INFO
         })
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
-    
+
     info!("Claude Code Server starting...");
-    
+
     match cli.mode {
         Some(Mode::Lsp { worktree }) => {
             let worktree_path = cli.worktree.or(worktree);
             run_lsp_server(worktree_path).await
         }
-        Some(Mode::Websocket { port }) => {
-            run_websocket_server(port).await
-        }
+        Some(Mode::Websocket { port }) => run_websocket_server(port).await,
         Some(Mode::Hybrid { port, worktree }) => {
             let worktree_path = cli.worktree.or(worktree);
             run_hybrid_server(port, worktree_path).await
@@ -94,13 +92,14 @@ async fn run_lsp_server(worktree: Option<PathBuf>) -> Result<()> {
     if let Some(path) = &worktree {
         info!("Worktree path: {}", path.display());
     }
-    
+
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
-    
-    let (service, socket) = LspService::new(|client| ClaudeCodeLanguageServer::new(client, worktree));
+
+    let (service, socket) =
+        LspService::new(|client| ClaudeCodeLanguageServer::new(client, worktree));
     Server::new(stdin, stdout, socket).serve(service).await;
-    
+
     Ok(())
 }
 
@@ -108,16 +107,19 @@ async fn run_websocket_server(port: Option<u16>) -> Result<()> {
     let port = port.unwrap_or_else(|| {
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind to random port");
-        listener.local_addr().expect("Failed to get local addr").port()
+        listener
+            .local_addr()
+            .expect("Failed to get local addr")
+            .port()
     });
-    
+
     info!("Starting WebSocket server on port {}", port);
     warn!("WebSocket server not yet implemented");
-    
+
     // TODO: Implement WebSocket server using tokio-tungstenite
     // This will handle Claude Code CLI connections
     // and implement the Claude Code protocol
-    
+
     Ok(())
 }
 
@@ -126,11 +128,11 @@ async fn run_hybrid_server(port: Option<u16>, worktree: Option<PathBuf>) -> Resu
     if let Some(path) = &worktree {
         info!("Worktree path: {}", path.display());
     }
-    
+
     // In hybrid mode, we run both servers
     let websocket_handle = tokio::spawn(run_websocket_server(port));
     let lsp_handle = tokio::spawn(run_lsp_server(worktree));
-    
+
     // Wait for either to complete (or fail)
     tokio::select! {
         result = websocket_handle => {
@@ -148,7 +150,7 @@ async fn run_hybrid_server(port: Option<u16>, worktree: Option<PathBuf>) -> Resu
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -173,7 +175,7 @@ impl LanguageServer for ClaudeCodeLanguageServer {
                 info!("Workspace folder: {}", folder.uri);
             }
         }
-        
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -211,7 +213,7 @@ impl LanguageServer for ClaudeCodeLanguageServer {
 
     async fn initialized(&self, _: InitializedParams) {
         info!("Claude Code LSP server initialized!");
-        
+
         self.client
             .log_message(MessageType::INFO, "Claude Code Language Server is ready!")
             .await;
@@ -224,7 +226,7 @@ impl LanguageServer for ClaudeCodeLanguageServer {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         info!("Document opened: {}", params.text_document.uri);
-        
+
         self.client
             .log_message(
                 MessageType::INFO,
@@ -247,8 +249,11 @@ impl LanguageServer for ClaudeCodeLanguageServer {
 
     async fn hover(&self, params: HoverParams) -> LspResult<Option<Hover>> {
         let position = params.text_document_position_params.position;
-        info!("Hover requested at {}:{}", position.line, position.character);
-        
+        info!(
+            "Hover requested at {}:{}",
+            position.line, position.character
+        );
+
         Ok(Some(Hover {
             contents: HoverContents::Scalar(MarkedString::String(
                 "Claude Code: AI-powered coding assistance available here".to_string(),
@@ -259,8 +264,11 @@ impl LanguageServer for ClaudeCodeLanguageServer {
 
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
         let position = params.text_document_position.position;
-        info!("Completion requested at {}:{}", position.line, position.character);
-        
+        info!(
+            "Completion requested at {}:{}",
+            position.line, position.character
+        );
+
         let completions = vec![
             CompletionItem {
                 label: "@claude explain".to_string(),
@@ -293,13 +301,34 @@ impl LanguageServer for ClaudeCodeLanguageServer {
                 ..Default::default()
             },
         ];
-        
+
         Ok(Some(CompletionResponse::Array(completions)))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> LspResult<Option<CodeActionResponse>> {
+        info!("Code action requested for range: {:?}", params.range);
+
+        let actions = vec![CodeActionOrCommand::CodeAction(CodeAction {
+            title: "Explain with Claude".to_string(),
+            kind: Some(CodeActionKind::REFACTOR),
+            diagnostics: None,
+            edit: None,
+            command: None,
+            is_preferred: Some(false),
+            disabled: None,
+            data: Some(serde_json::json!({
+                "action": "explain",
+                "uri": params.text_document.uri,
+                "range": params.range
+            })),
+        })];
+
+        Ok(Some(actions))
     }
 
     async fn execute_command(&self, params: ExecuteCommandParams) -> LspResult<Option<Value>> {
         info!("Execute command: {}", params.command);
-        
+
         match params.command.as_str() {
             "claude-code.explain" => {
                 self.client
@@ -334,7 +363,7 @@ impl LanguageServer for ClaudeCodeLanguageServer {
                     .await;
             }
         }
-        
+
         Ok(None)
     }
 }
