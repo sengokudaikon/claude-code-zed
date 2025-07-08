@@ -1,11 +1,21 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::signal;
+use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
 use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "claude-code-server")]
@@ -113,13 +123,38 @@ async fn run_websocket_server(port: Option<u16>) -> Result<()> {
             .port()
     });
 
-    info!("Starting WebSocket server on port {}", port);
-    warn!("WebSocket server not yet implemented");
-
-    // TODO: Implement WebSocket server using tokio-tungstenite
-    // This will handle Claude Code CLI connections
-    // and implement the Claude Code protocol
-
+    let addr = format!("127.0.0.1:{}", port);
+    info!("Starting WebSocket server on {}", addr);
+    
+    // Create lock file for CLI discovery
+    create_lock_file(port).await?;
+    
+    let listener = TcpListener::bind(&addr).await?;
+    info!("WebSocket server listening on {}", addr);
+    
+    // Shared state for managing connections
+    let server_state = Arc::new(ServerState::new());
+    
+    // Setup graceful shutdown
+    let shutdown_port = port;
+    tokio::spawn(async move {
+        if let Err(e) = signal::ctrl_c().await {
+            error!("Failed to listen for shutdown signal: {}", e);
+        } else {
+            info!("Shutdown signal received, cleaning up...");
+            if let Err(e) = cleanup_lock_file(shutdown_port).await {
+                error!("Failed to cleanup lock file: {}", e);
+            }
+            std::process::exit(0);
+        }
+    });
+    
+    while let Ok((stream, addr)) = listener.accept().await {
+        info!("New connection from {}", addr);
+        let state = Arc::clone(&server_state);
+        tokio::spawn(handle_connection(stream, addr, state));
+    }
+    
     Ok(())
 }
 
@@ -366,4 +401,293 @@ impl LanguageServer for ClaudeCodeLanguageServer {
 
         Ok(None)
     }
+}
+
+// WebSocket server state and message types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ClaudeCodeMessage {
+    id: String,
+    #[serde(rename = "type")]
+    message_type: String,
+    data: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ClaudeCodeResponse {
+    id: String,
+    #[serde(rename = "type")]
+    response_type: String,
+    data: Value,
+    error: Option<String>,
+}
+
+#[derive(Debug)]
+struct ServerState {
+    connections: Arc<RwLock<HashMap<String, String>>>,
+    message_handlers: Arc<RwLock<HashMap<String, broadcast::Sender<ClaudeCodeMessage>>>>,
+}
+
+impl ServerState {
+    fn new() -> Self {
+        Self {
+            connections: Arc::new(RwLock::new(HashMap::new())),
+            message_handlers: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+// Lock file management
+async fn create_lock_file(port: u16) -> Result<()> {
+    let lock_dir = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".claude")
+        .join("ide");
+    
+    tokio::fs::create_dir_all(&lock_dir).await?;
+    
+    let lock_file = lock_dir.join(format!("{}.lock", port));
+    let lock_data = serde_json::json!({
+        "port": port,
+        "pid": std::process::id(),
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    });
+    
+    tokio::fs::write(&lock_file, serde_json::to_string_pretty(&lock_data)?).await?;
+    info!("Lock file created at {}", lock_file.display());
+    
+    Ok(())
+}
+
+// WebSocket connection handler
+async fn handle_connection(
+    stream: TcpStream,
+    addr: SocketAddr,
+    state: Arc<ServerState>,
+) -> Result<()> {
+    let ws_stream = accept_async(stream).await?;
+    let connection_id = Uuid::new_v4().to_string();
+    
+    info!("WebSocket connection established: {} ({})", connection_id, addr);
+    
+    let (mut ws_sender, mut ws_receiver) = ws_stream.split();
+    
+    // Store connection ID
+    {
+        let mut connections = state.connections.write().await;
+        connections.insert(connection_id.clone(), addr.to_string());
+    }
+    
+    // Handle incoming messages
+    while let Some(msg) = ws_receiver.next().await {
+        match msg {
+            Ok(Message::Text(text)) => {
+                debug!("Received message: {}", text);
+                
+                match serde_json::from_str::<ClaudeCodeMessage>(&text) {
+                    Ok(message) => {
+                        let response = handle_claude_code_message(message, &state).await;
+                        let response_text = serde_json::to_string(&response)?;
+                        
+                        if let Err(e) = ws_sender.send(Message::Text(response_text)).await {
+                            error!("Failed to send response: {}", e);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to parse message: {}", e);
+                        let error_response = ClaudeCodeResponse {
+                            id: Uuid::new_v4().to_string(),
+                            response_type: "error".to_string(),
+                            data: Value::Null,
+                            error: Some(format!("Invalid message format: {}", e)),
+                        };
+                        
+                        if let Ok(response_text) = serde_json::to_string(&error_response) {
+                            let _ = ws_sender.send(Message::Text(response_text)).await;
+                        }
+                    }
+                }
+            }
+            Ok(Message::Close(_)) => {
+                info!("WebSocket connection closed: {}", connection_id);
+                break;
+            }
+            Ok(Message::Ping(payload)) => {
+                if let Err(e) = ws_sender.send(Message::Pong(payload)).await {
+                    error!("Failed to send pong: {}", e);
+                    break;
+                }
+            }
+            Ok(Message::Pong(_)) => {
+                // Ignore pong messages
+            }
+            Ok(Message::Binary(_)) => {
+                warn!("Received binary message, ignoring");
+            }
+            Ok(Message::Frame(_)) => {
+                // Handle frame messages (typically handled internally)
+                debug!("Received frame message");
+            }
+            Err(e) => {
+                error!("WebSocket error: {}", e);
+                break;
+            }
+        }
+    }
+    
+    // Clean up connection
+    {
+        let mut connections = state.connections.write().await;
+        connections.remove(&connection_id);
+    }
+    
+    info!("WebSocket connection closed: {} ({})", connection_id, addr);
+    Ok(())
+}
+
+// Handle Claude Code protocol messages
+async fn handle_claude_code_message(
+    message: ClaudeCodeMessage,
+    _state: &Arc<ServerState>,
+) -> ClaudeCodeResponse {
+    match message.message_type.as_str() {
+        "ping" => ClaudeCodeResponse {
+            id: message.id,
+            response_type: "pong".to_string(),
+            data: message.data,
+            error: None,
+        },
+        "get_capabilities" => ClaudeCodeResponse {
+            id: message.id,
+            response_type: "capabilities".to_string(),
+            data: serde_json::json!({
+                "version": "0.1.0",
+                "features": ["lsp", "websocket", "file_operations", "code_execution"],
+                "supported_languages": ["rust", "javascript", "typescript", "python", "go", "java", "c", "cpp"]
+            }),
+            error: None,
+        },
+        "execute_command" => {
+            // Handle command execution (like running tests, building, etc.)
+            let command = message.data.get("command").and_then(|v| v.as_str());
+            let args = message.data.get("args").and_then(|v| v.as_array());
+            
+            match command {
+                Some(cmd) => {
+                    info!("Executing command: {} with args: {:?}", cmd, args);
+                    
+                    // For now, just echo the command back
+                    // In a full implementation, this would execute the command
+                    ClaudeCodeResponse {
+                        id: message.id,
+                        response_type: "command_result".to_string(),
+                        data: serde_json::json!({
+                            "command": cmd,
+                            "args": args,
+                            "status": "success",
+                            "output": "Command executed successfully (mock)"
+                        }),
+                        error: None,
+                    }
+                }
+                None => ClaudeCodeResponse {
+                    id: message.id,
+                    response_type: "error".to_string(),
+                    data: Value::Null,
+                    error: Some("Missing command in execute_command message".to_string()),
+                },
+            }
+        }
+        "get_file" => {
+            // Handle file read operations
+            let path = message.data.get("path").and_then(|v| v.as_str());
+            
+            match path {
+                Some(file_path) => {
+                    match tokio::fs::read_to_string(file_path).await {
+                        Ok(content) => ClaudeCodeResponse {
+                            id: message.id,
+                            response_type: "file_content".to_string(),
+                            data: serde_json::json!({
+                                "path": file_path,
+                                "content": content
+                            }),
+                            error: None,
+                        },
+                        Err(e) => ClaudeCodeResponse {
+                            id: message.id,
+                            response_type: "error".to_string(),
+                            data: Value::Null,
+                            error: Some(format!("Failed to read file: {}", e)),
+                        },
+                    }
+                }
+                None => ClaudeCodeResponse {
+                    id: message.id,
+                    response_type: "error".to_string(),
+                    data: Value::Null,
+                    error: Some("Missing path in get_file message".to_string()),
+                },
+            }
+        }
+        "write_file" => {
+            // Handle file write operations
+            let path = message.data.get("path").and_then(|v| v.as_str());
+            let content = message.data.get("content").and_then(|v| v.as_str());
+            
+            match (path, content) {
+                (Some(file_path), Some(file_content)) => {
+                    match tokio::fs::write(file_path, file_content).await {
+                        Ok(_) => ClaudeCodeResponse {
+                            id: message.id,
+                            response_type: "file_written".to_string(),
+                            data: serde_json::json!({
+                                "path": file_path,
+                                "size": file_content.len()
+                            }),
+                            error: None,
+                        },
+                        Err(e) => ClaudeCodeResponse {
+                            id: message.id,
+                            response_type: "error".to_string(),
+                            data: Value::Null,
+                            error: Some(format!("Failed to write file: {}", e)),
+                        },
+                    }
+                }
+                _ => ClaudeCodeResponse {
+                    id: message.id,
+                    response_type: "error".to_string(),
+                    data: Value::Null,
+                    error: Some("Missing path or content in write_file message".to_string()),
+                },
+            }
+        }
+        _ => ClaudeCodeResponse {
+            id: message.id,
+            response_type: "error".to_string(),
+            data: Value::Null,
+            error: Some(format!("Unknown message type: {}", message.message_type)),
+        },
+    }
+}
+
+// Cleanup lock file on shutdown
+async fn cleanup_lock_file(port: u16) -> Result<()> {
+    let lock_dir = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".claude")
+        .join("ide");
+    
+    let lock_file = lock_dir.join(format!("{}.lock", port));
+    
+    if lock_file.exists() {
+        tokio::fs::remove_file(&lock_file).await?;
+        info!("Lock file cleaned up: {}", lock_file.display());
+    }
+    
+    Ok(())
 }
