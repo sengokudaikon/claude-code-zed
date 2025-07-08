@@ -125,7 +125,7 @@ impl MCPServer {
 
     async fn handle_initialize(&self, params: Option<Value>) -> Result<Value> {
         info!("Initializing MCP session");
-        
+
         if let Some(params) = params {
             debug!("Initialize params: {}", params);
         }
@@ -142,7 +142,7 @@ impl MCPServer {
 
     async fn handle_tools_list(&self) -> Result<Value> {
         info!("Listing available tools");
-        
+
         let tools = vec![
             Tool {
                 name: "echo".to_string(),
@@ -178,7 +178,9 @@ impl MCPServer {
             },
             Tool {
                 name: "openFile".to_string(),
-                description: Some("Open a file in the editor and optionally select a range of text".to_string()),
+                description: Some(
+                    "Open a file in the editor and optionally select a range of text".to_string(),
+                ),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -215,7 +217,9 @@ impl MCPServer {
             },
             Tool {
                 name: "getCurrentSelection".to_string(),
-                description: Some("Get the current text selection in the active editor".to_string()),
+                description: Some(
+                    "Get the current text selection in the active editor".to_string(),
+                ),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -233,7 +237,9 @@ impl MCPServer {
             },
             Tool {
                 name: "getWorkspaceFolders".to_string(),
-                description: Some("Get all workspace folders currently open in the IDE".to_string()),
+                description: Some(
+                    "Get all workspace folders currently open in the IDE".to_string(),
+                ),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -242,25 +248,25 @@ impl MCPServer {
             },
             Tool {
                 name: "openDiff".to_string(),
-                description: Some("Open a git diff for the file".to_string()),
+                description: Some("Open a git diff for the file (blocking operation)".to_string()),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "old_file_path": {
                             "type": "string",
-                            "description": "Path to the file to show diff for. If not provided, uses active editor."
+                            "description": "Path to original file"
                         },
                         "new_file_path": {
                             "type": "string",
-                            "description": "Path to the file to show diff for. If not provided, uses active editor."
+                            "description": "Path to new file"
                         },
                         "new_file_contents": {
                             "type": "string",
-                            "description": "Contents of the new file. If not provided then the current file contents of new_file_path will be used."
+                            "description": "Contents of the new file"
                         },
                         "tab_name": {
                             "type": "string",
-                            "description": "Path to the file to show diff for. If not provided, uses active editor."
+                            "description": "Tab name for the diff view"
                         }
                     },
                     "required": ["old_file_path", "new_file_path", "new_file_contents", "tab_name"]
@@ -268,7 +274,10 @@ impl MCPServer {
             },
             Tool {
                 name: "getLatestSelection".to_string(),
-                description: Some("Get the most recent text selection (even if not in the active editor)".to_string()),
+                description: Some(
+                    "Get the most recent text selection (even if not in the active editor)"
+                        .to_string(),
+                ),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -283,7 +292,7 @@ impl MCPServer {
                     "properties": {
                         "uri": {
                             "type": "string",
-                            "description": "Optional file URI to get diagnostics for. If not provided, gets diagnostics for all files."
+                            "description": "File URI to get diagnostics for. If not provided, gets diagnostics for all files."
                         }
                     },
                     "required": []
@@ -333,7 +342,10 @@ impl MCPServer {
             },
             Tool {
                 name: "executeCode".to_string(),
-                description: Some("Execute python code in the Jupyter kernel for the current notebook file".to_string()),
+                description: Some(
+                    "Execute python code in the Jupyter kernel for the current notebook file"
+                        .to_string(),
+                ),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -354,8 +366,9 @@ impl MCPServer {
 
     async fn handle_tools_call(&self, params: Option<Value>) -> Result<Value> {
         let params = params.ok_or_else(|| anyhow::anyhow!("Missing parameters for tools/call"))?;
-        
-        let tool_name = params.get("name")
+
+        let tool_name = params
+            .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing tool name"))?;
 
@@ -367,10 +380,11 @@ impl MCPServer {
 
         let content = match tool_name {
             "echo" => {
-                let text = arguments.get("text")
+                let text = arguments
+                    .get("text")
                     .and_then(|v| v.as_str())
                     .unwrap_or("No text provided");
-                
+
                 vec![TextContent {
                     type_: "text".to_string(),
                     text: format!("Echo: {}", text),
@@ -380,7 +394,7 @@ impl MCPServer {
                 let workspace_info = std::env::current_dir()
                     .map(|path| path.to_string_lossy().to_string())
                     .unwrap_or_else(|_| "Unknown workspace".to_string());
-                
+
                 vec![TextContent {
                     type_: "text".to_string(),
                     text: format!("Current workspace: {}", workspace_info),
@@ -388,154 +402,231 @@ impl MCPServer {
             }
             "closeAllDiffTabs" => {
                 info!("Closing all diff tabs");
-                
+
+                // Return the count of closed diff tabs according to protocol
+                let closed_count = 0; // Simulate no diff tabs to close
+
                 vec![TextContent {
                     type_: "text".to_string(),
-                    text: "All diff tabs have been closed".to_string(),
+                    text: format!("CLOSED_{}_DIFF_TABS", closed_count),
                 }]
             }
             "openFile" => {
-                let file_path = arguments.get("filePath")
+                let file_path = arguments
+                    .get("filePath")
                     .and_then(|v| v.as_str())
                     .unwrap_or("No file path provided");
-                let preview = arguments.get("preview")
+                let preview = arguments
+                    .get("preview")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let start_text = arguments.get("startText")
-                    .and_then(|v| v.as_str());
-                let end_text = arguments.get("endText")
-                    .and_then(|v| v.as_str());
-                
+                let _start_text = arguments.get("startText").and_then(|v| v.as_str());
+                let _end_text = arguments.get("endText").and_then(|v| v.as_str());
+                let make_frontmost = arguments
+                    .get("makeFrontmost")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
                 info!("Opening file: {} (preview: {})", file_path, preview);
-                
-                let mut response = format!("Opened file: {}", file_path);
-                if preview {
-                    response.push_str(" (preview mode)");
+
+                if make_frontmost {
+                    // Simple response when making frontmost
+                    vec![TextContent {
+                        type_: "text".to_string(),
+                        text: format!("Opened file: {}", file_path),
+                    }]
+                } else {
+                    // Detailed JSON response when not making frontmost
+                    let response = serde_json::json!({
+                        "success": true,
+                        "filePath": std::path::Path::new(file_path).canonicalize()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| file_path.to_string()),
+                        "languageId": "text",
+                        "lineCount": 0
+                    });
+
+                    vec![TextContent {
+                        type_: "text".to_string(),
+                        text: response.to_string(),
+                    }]
                 }
-                if let Some(start) = start_text {
-                    response.push_str(&format!(" with selection starting at '{}'", start));
-                    if let Some(end) = end_text {
-                        response.push_str(&format!(" ending at '{}'", end));
-                    }
-                }
-                
-                vec![TextContent {
-                    type_: "text".to_string(),
-                    text: response,
-                }]
             }
             "getCurrentSelection" => {
                 info!("Getting current selection");
-                
+
+                // Return JSON-stringified response according to protocol
+                let response = serde_json::json!({
+                    "success": false,
+                    "message": "No active editor found"
+                });
+
                 vec![TextContent {
                     type_: "text".to_string(),
-                    text: "No text currently selected".to_string(),
+                    text: response.to_string(),
                 }]
             }
             "getOpenEditors" => {
                 info!("Getting open editors");
-                
+
+                // Return JSON-stringified response according to protocol
+                let response = serde_json::json!({
+                    "tabs": []
+                });
+
                 vec![TextContent {
                     type_: "text".to_string(),
-                    text: "No editors currently open".to_string(),
+                    text: response.to_string(),
                 }]
             }
             "getWorkspaceFolders" => {
                 let workspace_info = std::env::current_dir()
                     .map(|path| path.to_string_lossy().to_string())
                     .unwrap_or_else(|_| "Unknown workspace".to_string());
-                
+
                 info!("Getting workspace folders");
-                
+
+                // Return JSON-stringified response according to protocol
+                let response = serde_json::json!({
+                    "success": true,
+                    "folders": [{
+                        "name": std::path::Path::new(&workspace_info)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("workspace"),
+                        "uri": format!("file://{}", workspace_info),
+                        "path": workspace_info
+                    }],
+                    "rootPath": workspace_info
+                });
+
                 vec![TextContent {
                     type_: "text".to_string(),
-                    text: format!("Workspace folders: [{}]", workspace_info),
+                    text: response.to_string(),
                 }]
             }
             "openDiff" => {
-                let old_file_path = arguments.get("old_file_path")
+                let old_file_path = arguments
+                    .get("old_file_path")
                     .and_then(|v| v.as_str())
                     .unwrap_or("No old file path provided");
-                let new_file_path = arguments.get("new_file_path")
+                let new_file_path = arguments
+                    .get("new_file_path")
                     .and_then(|v| v.as_str())
                     .unwrap_or("No new file path provided");
-                let tab_name = arguments.get("tab_name")
+                let _tab_name = arguments
+                    .get("tab_name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("diff");
-                
+
                 info!("Opening diff for {} vs {}", old_file_path, new_file_path);
-                
+
+                // Always respond with FILE_SAVED to simulate accepting the diff
                 vec![TextContent {
                     type_: "text".to_string(),
-                    text: format!("Opened diff view in tab '{}' comparing {} and {}", tab_name, old_file_path, new_file_path),
+                    text: "FILE_SAVED".to_string(),
                 }]
             }
             "getLatestSelection" => {
                 info!("Getting latest selection");
-                
+
+                // Return JSON-stringified response according to protocol
+                let response = serde_json::json!({
+                    "success": false,
+                    "message": "No selection available"
+                });
+
                 vec![TextContent {
                     type_: "text".to_string(),
-                    text: "No recent text selection found".to_string(),
+                    text: response.to_string(),
                 }]
             }
             "getDiagnostics" => {
-                let uri = arguments.get("uri")
-                    .and_then(|v| v.as_str());
-                
+                let uri = arguments.get("uri").and_then(|v| v.as_str());
+
                 info!("Getting diagnostics for: {:?}", uri);
-                
+
+                // Return JSON-stringified array of diagnostics per file
+                let response = if let Some(uri) = uri {
+                    serde_json::json!([{
+                        "uri": uri,
+                        "diagnostics": []
+                    }])
+                } else {
+                    serde_json::json!([])
+                };
+
                 vec![TextContent {
                     type_: "text".to_string(),
-                    text: if let Some(uri) = uri {
-                        format!("No diagnostics found for {}", uri)
-                    } else {
-                        "No diagnostics found in workspace".to_string()
-                    },
+                    text: response.to_string(),
                 }]
             }
             "checkDocumentDirty" => {
-                let file_path = arguments.get("filePath")
+                let file_path = arguments
+                    .get("filePath")
                     .and_then(|v| v.as_str())
                     .unwrap_or("No file path provided");
-                
+
                 info!("Checking if document is dirty: {}", file_path);
-                
+
+                // Return JSON-stringified response according to protocol
+                let response = serde_json::json!({
+                    "success": true,
+                    "filePath": file_path,
+                    "isDirty": false,
+                    "isUntitled": false
+                });
+
                 vec![TextContent {
                     type_: "text".to_string(),
-                    text: format!("Document {} has no unsaved changes", file_path),
+                    text: response.to_string(),
                 }]
             }
             "saveDocument" => {
-                let file_path = arguments.get("filePath")
+                let file_path = arguments
+                    .get("filePath")
                     .and_then(|v| v.as_str())
                     .unwrap_or("No file path provided");
-                
+
                 info!("Saving document: {}", file_path);
-                
+
+                // Return JSON-stringified response according to protocol
+                let response = serde_json::json!({
+                    "success": true,
+                    "filePath": file_path,
+                    "saved": true,
+                    "message": "Document saved successfully"
+                });
+
                 vec![TextContent {
                     type_: "text".to_string(),
-                    text: format!("Document {} saved successfully", file_path),
+                    text: response.to_string(),
                 }]
             }
             "close_tab" => {
-                let tab_name = arguments.get("tab_name")
+                let tab_name = arguments
+                    .get("tab_name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("No tab name provided");
-                
+
                 info!("Closing tab: {}", tab_name);
-                
+
                 vec![TextContent {
                     type_: "text".to_string(),
-                    text: format!("Tab '{}' has been closed", tab_name),
+                    text: "TAB_CLOSED".to_string(),
                 }]
             }
             "executeCode" => {
-                let code = arguments.get("code")
+                let code = arguments
+                    .get("code")
                     .and_then(|v| v.as_str())
                     .unwrap_or("No code provided");
-                
-                info!("Executing code: {}", code.chars().take(50).collect::<String>());
-                
+
+                info!(
+                    "Executing code: {}",
+                    code.chars().take(50).collect::<String>()
+                );
+
                 vec![TextContent {
                     type_: "text".to_string(),
                     text: format!("Code executed successfully. Output: (simulated execution of {} characters)", code.len()),
@@ -552,7 +643,8 @@ impl MCPServer {
 
     async fn handle_logging_set_level(&self, params: Option<Value>) -> Result<Value> {
         if let Some(params) = params {
-            let level = params.get("level")
+            let level = params
+                .get("level")
                 .and_then(|v| v.as_str())
                 .unwrap_or("info");
             info!("Setting log level to: {}", level);
@@ -563,7 +655,7 @@ impl MCPServer {
 
     async fn handle_prompts_list(&self) -> Result<Value> {
         info!("Listing available prompts");
-        
+
         Ok(serde_json::json!({
             "prompts": []
         }))
@@ -571,8 +663,9 @@ impl MCPServer {
 
     async fn handle_prompts_get(&self, params: Option<Value>) -> Result<Value> {
         let params = params.ok_or_else(|| anyhow::anyhow!("Missing parameters for prompts/get"))?;
-        
-        let prompt_name = params.get("name")
+
+        let prompt_name = params
+            .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing prompt name"))?;
 
