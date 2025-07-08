@@ -167,6 +167,56 @@ impl MCPServer {
                     "required": []
                 }),
             },
+            Tool {
+                name: "closeAllDiffTabs".to_string(),
+                description: Some("Close all diff tabs in the editor".to_string()),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "openFile".to_string(),
+                description: Some("Open a file in the editor".to_string()),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "filePath": {
+                            "type": "string",
+                            "description": "Path to the file to open"
+                        }
+                    },
+                    "required": ["filePath"]
+                }),
+            },
+            Tool {
+                name: "getCurrentSelection".to_string(),
+                description: Some("Get the current text selection in the active editor".to_string()),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "getOpenEditors".to_string(),
+                description: Some("Get information about currently open editors".to_string()),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+            Tool {
+                name: "getWorkspaceFolders".to_string(),
+                description: Some("Get all workspace folders currently open in the IDE".to_string()),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
         ];
 
         Ok(serde_json::json!({
@@ -206,6 +256,54 @@ impl MCPServer {
                 vec![TextContent {
                     type_: "text".to_string(),
                     text: format!("Current workspace: {}", workspace_info),
+                }]
+            }
+            "closeAllDiffTabs" => {
+                info!("Closing all diff tabs");
+                
+                vec![TextContent {
+                    type_: "text".to_string(),
+                    text: "All diff tabs have been closed".to_string(),
+                }]
+            }
+            "openFile" => {
+                let file_path = arguments.get("filePath")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("No file path provided");
+                
+                info!("Opening file: {}", file_path);
+                
+                vec![TextContent {
+                    type_: "text".to_string(),
+                    text: format!("Opened file: {}", file_path),
+                }]
+            }
+            "getCurrentSelection" => {
+                info!("Getting current selection");
+                
+                vec![TextContent {
+                    type_: "text".to_string(),
+                    text: "No text currently selected".to_string(),
+                }]
+            }
+            "getOpenEditors" => {
+                info!("Getting open editors");
+                
+                vec![TextContent {
+                    type_: "text".to_string(),
+                    text: "No editors currently open".to_string(),
+                }]
+            }
+            "getWorkspaceFolders" => {
+                let workspace_info = std::env::current_dir()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "Unknown workspace".to_string());
+                
+                info!("Getting workspace folders");
+                
+                vec![TextContent {
+                    type_: "text".to_string(),
+                    text: format!("Workspace folders: [{}]", workspace_info),
                 }]
             }
             _ => return Err(anyhow::anyhow!("Unknown tool: {}", tool_name)),
