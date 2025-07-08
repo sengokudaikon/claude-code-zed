@@ -1,13 +1,14 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
-use tracing::{info, debug};
+use tracing::{debug, info, warn};
 
 // Notification structures for IDE to Claude communication
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -58,18 +59,18 @@ pub struct ClaudeCodeLanguageServer {
 
 impl ClaudeCodeLanguageServer {
     pub fn new(client: Client, worktree: Option<PathBuf>) -> Self {
-        Self { 
-            client, 
+        Self {
+            client,
             worktree,
             notification_sender: None,
         }
     }
-    
+
     pub fn with_notification_sender(mut self, sender: Arc<NotificationSender>) -> Self {
         self.notification_sender = Some(sender);
         self
     }
-    
+
     async fn send_notification(&self, method: &str, params: serde_json::Value) {
         if let Some(sender) = &self.notification_sender {
             let notification = JsonRpcNotification {
@@ -77,11 +78,76 @@ impl ClaudeCodeLanguageServer {
                 method: method.to_string(),
                 params,
             };
-            
+
             if let Err(e) = sender.send(notification) {
                 debug!("Failed to send notification: {}", e);
             }
         }
+    }
+
+    fn read_text_from_range(&self, file_path: &str, range: Range) -> String {
+        let file_path = if file_path.starts_with("file://") {
+            &file_path[7..] // Remove "file://" prefix
+        } else {
+            file_path
+        };
+
+        match fs::read_to_string(file_path) {
+            Ok(content) => {
+                let lines: Vec<&str> = content.lines().collect();
+
+                // Handle single line selection
+                if range.start.line == range.end.line {
+                    if let Some(line) = lines.get(range.start.line as usize) {
+                        let start_char = range.start.character as usize;
+                        let end_char = range.end.character as usize;
+
+                        if start_char < line.len()
+                            && end_char <= line.len()
+                            && start_char <= end_char
+                        {
+                            return line[start_char..end_char].to_string();
+                        }
+                    }
+                } else {
+                    // Handle multi-line selection
+                    let mut selected_text = String::new();
+
+                    for (i, line_index) in (range.start.line..=range.end.line).enumerate() {
+                        if let Some(line) = lines.get(line_index as usize) {
+                            if i == 0 {
+                                // First line - from start character to end
+                                let start_char = range.start.character as usize;
+                                if start_char < line.len() {
+                                    selected_text.push_str(&line[start_char..]);
+                                }
+                            } else if line_index == range.end.line {
+                                // Last line - from start to end character
+                                let end_char = range.end.character as usize;
+                                if end_char <= line.len() {
+                                    selected_text.push_str(&line[..end_char]);
+                                }
+                            } else {
+                                // Middle lines - entire line
+                                selected_text.push_str(line);
+                            }
+
+                            // Add newline except for the last line
+                            if line_index < range.end.line {
+                                selected_text.push('\n');
+                            }
+                        }
+                    }
+
+                    return selected_text;
+                }
+            }
+            Err(e) => {
+                warn!("Failed to read file {}: {}", file_path, e);
+            }
+        }
+
+        String::new()
     }
 }
 
@@ -228,10 +294,12 @@ impl LanguageServer for ClaudeCodeLanguageServer {
 
     async fn code_action(&self, params: CodeActionParams) -> LspResult<Option<CodeActionResponse>> {
         info!("Code action requested for range: {:?}", params.range);
-        
+
         // Send selection_changed notification when code action is requested
+        let selected_text =
+            self.read_text_from_range(params.text_document.uri.path(), params.range);
         let selection_notification = SelectionChangedNotification {
-            text: "selected text content".to_string(), // In a real implementation, this would be the actual selected text
+            text: selected_text,
             file_path: params.text_document.uri.path().to_string(),
             file_url: params.text_document.uri.to_string(),
             selection: SelectionInfo {
@@ -240,9 +308,16 @@ impl LanguageServer for ClaudeCodeLanguageServer {
                 is_empty: params.range.start == params.range.end,
             },
         };
-        
-        info!("Sending selection_changed notification for range: {:?}", params.range);
-        self.send_notification("selection_changed", serde_json::to_value(selection_notification).unwrap()).await;
+
+        info!(
+            "Sending selection_changed notification for range: {:?}",
+            params.range
+        );
+        self.send_notification(
+            "selection_changed",
+            serde_json::to_value(selection_notification).unwrap(),
+        )
+        .await;
 
         let actions = vec![CodeActionOrCommand::CodeAction(CodeAction {
             title: "Explain with Claude".to_string(),
@@ -291,33 +366,48 @@ impl LanguageServer for ClaudeCodeLanguageServer {
                     .await;
             }
             "claude-code.at-mention" => {
-                info!("At-mention command executed with args: {:?}", params.arguments);
-                
+                info!(
+                    "At-mention command executed with args: {:?}",
+                    params.arguments
+                );
+
                 // Parse arguments to extract file path and line range
                 if let Some(args) = params.arguments.first() {
-                    if let Ok(mention_data) = serde_json::from_value::<serde_json::Value>(args.clone()) {
-                        let file_path = mention_data.get("filePath")
+                    if let Ok(mention_data) =
+                        serde_json::from_value::<serde_json::Value>(args.clone())
+                    {
+                        let file_path = mention_data
+                            .get("filePath")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
-                        let line_start = mention_data.get("lineStart")
+                        let line_start = mention_data
+                            .get("lineStart")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0) as u32;
-                        let line_end = mention_data.get("lineEnd")
+                        let line_end = mention_data
+                            .get("lineEnd")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0) as u32;
-                            
+
                         let at_mention_notification = AtMentionedNotification {
                             file_path: file_path.to_string(),
                             line_start,
                             line_end,
                         };
-                        
-                        self.send_notification("at_mentioned", serde_json::to_value(at_mention_notification).unwrap()).await;
-                        
+
+                        self.send_notification(
+                            "at_mentioned",
+                            serde_json::to_value(at_mention_notification).unwrap(),
+                        )
+                        .await;
+
                         self.client
                             .show_message(
                                 MessageType::INFO,
-                                format!("At-mention sent for {}:{}-{}", file_path, line_start, line_end),
+                                format!(
+                                    "At-mention sent for {}:{}-{}",
+                                    file_path, line_start, line_end
+                                ),
                             )
                             .await;
                     }
@@ -336,15 +426,21 @@ impl LanguageServer for ClaudeCodeLanguageServer {
         Ok(None)
     }
 
-    async fn selection_range(&self, params: SelectionRangeParams) -> LspResult<Option<Vec<SelectionRange>>> {
-        info!("Selection range requested for {} positions", params.positions.len());
-        
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> LspResult<Option<Vec<SelectionRange>>> {
+        info!(
+            "Selection range requested for {} positions",
+            params.positions.len()
+        );
+
         // For each position, create a selection range and notify about the selection
         let mut ranges = Vec::new();
-        
+
         for position in &params.positions {
             info!("Selection at {}:{}", position.line, position.character);
-            
+
             // Create a basic selection range (this would normally be more sophisticated)
             let range = Range {
                 start: *position,
@@ -353,15 +449,24 @@ impl LanguageServer for ClaudeCodeLanguageServer {
                     character: position.character + 1,
                 },
             };
-            
+
             ranges.push(SelectionRange {
                 range,
                 parent: None,
             });
-            
+
             // Send selection_changed notification
+            let selection_range = Range {
+                start: *position,
+                end: Position {
+                    line: position.line,
+                    character: position.character + 1,
+                },
+            };
+            let selected_text =
+                self.read_text_from_range(params.text_document.uri.path(), selection_range);
             let selection_notification = SelectionChangedNotification {
-                text: "".to_string(), // Would normally get actual selected text
+                text: selected_text,
                 file_path: params.text_document.uri.path().to_string(),
                 file_url: params.text_document.uri.to_string(),
                 selection: SelectionInfo {
@@ -373,10 +478,14 @@ impl LanguageServer for ClaudeCodeLanguageServer {
                     is_empty: true,
                 },
             };
-            
-            self.send_notification("selection_changed", serde_json::to_value(selection_notification).unwrap()).await;
+
+            self.send_notification(
+                "selection_changed",
+                serde_json::to_value(selection_notification).unwrap(),
+            )
+            .await;
         }
-        
+
         Ok(Some(ranges))
     }
 }
@@ -386,8 +495,8 @@ pub async fn run_lsp_server(worktree: Option<PathBuf>) -> Result<()> {
 }
 
 pub async fn run_lsp_server_with_notifications(
-    worktree: Option<PathBuf>, 
-    notification_sender: Option<Arc<NotificationSender>>
+    worktree: Option<PathBuf>,
+    notification_sender: Option<Arc<NotificationSender>>,
 ) -> Result<()> {
     info!("Starting LSP server mode");
     if let Some(path) = &worktree {

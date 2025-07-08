@@ -76,6 +76,7 @@ async fn main() -> Result<()> {
         .with_line_number(true)
         .with_thread_ids(true)
         .with_target(false)
+        .with_writer(std::io::stderr) // Force all logs to stderr for LSP compatibility
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
