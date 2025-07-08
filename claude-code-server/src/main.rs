@@ -55,15 +55,31 @@ enum Mode {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging
+    // Initialize logging with enhanced formatting for debugging
+    let log_level = if cli.debug {
+        tracing::Level::DEBUG
+    } else {
+        // Check environment variable for log level override
+        match std::env::var("RUST_LOG").as_deref() {
+            Ok("trace") => tracing::Level::TRACE,
+            Ok("debug") => tracing::Level::DEBUG,
+            Ok("info") => tracing::Level::INFO,
+            Ok("warn") => tracing::Level::WARN,
+            Ok("error") => tracing::Level::ERROR,
+            _ => tracing::Level::INFO,
+        }
+    };
+
     let subscriber = tracing_subscriber::fmt()
-        .with_max_level(if cli.debug {
-            tracing::Level::DEBUG
-        } else {
-            tracing::Level::INFO
-        })
+        .with_max_level(log_level)
+        .with_file(true)
+        .with_line_number(true)
+        .with_thread_ids(true)
+        .with_target(false)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
+
+    info!("Logging initialized at level: {:?}", log_level);
 
     info!("Claude Code Server starting...");
 

@@ -12,7 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::signal;
 use tokio::sync::RwLock;
 use tokio::time::interval;
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::{tungstenite::Message};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -144,7 +144,15 @@ pub async fn create_lock_file(port: u16, state: &ServerState) -> Result<()> {
         .join(".claude")
         .join("ide");
     
-    tokio::fs::create_dir_all(&lock_dir).await?;
+    debug!("Lock file directory: {}", lock_dir.display());
+    
+    tokio::fs::create_dir_all(&lock_dir).await.map_err(|e| {
+        error!("Failed to create lock directory {}: {}", lock_dir.display(), e);
+        debug!("Directory creation error details: {:?}", e);
+        e
+    })?;
+    
+    debug!("Lock directory created/verified: {}", lock_dir.display());
     
     let lock_file = lock_dir.join(format!("{}.lock", port));
     let lock_data = serde_json::json!({
@@ -159,8 +167,23 @@ pub async fn create_lock_file(port: u16, state: &ServerState) -> Result<()> {
             .as_secs()
     });
     
-    tokio::fs::write(&lock_file, serde_json::to_string_pretty(&lock_data)?).await?;
-    info!("Lock file created at {} with auth token", lock_file.display());
+    let lock_json = serde_json::to_string_pretty(&lock_data).map_err(|e| {
+        error!("Failed to serialize lock file data: {}", e);
+        debug!("Serialization error details: {:?}", e);
+        e
+    })?;
+    
+    debug!("Writing lock file content: {}", lock_json);
+    
+    tokio::fs::write(&lock_file, &lock_json).await.map_err(|e| {
+        error!("Failed to write lock file {}: {}", lock_file.display(), e);
+        debug!("File write error details: {:?}", e);
+        e
+    })?;
+    
+    info!("Lock file created at {} with auth token (length: {})", 
+          lock_file.display(), state.auth_token.len());
+    debug!("Lock file content written successfully: {} bytes", lock_json.len());
     
     Ok(())
 }
@@ -174,9 +197,18 @@ pub async fn cleanup_lock_file(port: u16) -> Result<()> {
     
     let lock_file = lock_dir.join(format!("{}.lock", port));
     
+    debug!("Attempting to cleanup lock file: {}", lock_file.display());
+    
     if lock_file.exists() {
-        tokio::fs::remove_file(&lock_file).await?;
+        debug!("Lock file exists, removing: {}", lock_file.display());
+        tokio::fs::remove_file(&lock_file).await.map_err(|e| {
+            error!("Failed to remove lock file {}: {}", lock_file.display(), e);
+            debug!("Lock file removal error details: {:?}", e);
+            e
+        })?;
         info!("Lock file cleaned up: {}", lock_file.display());
+    } else {
+        debug!("Lock file does not exist, no cleanup needed: {}", lock_file.display());
     }
     
     Ok(())
@@ -198,15 +230,28 @@ pub async fn run_websocket_server_with_worktree(port: Option<u16>, worktree: Opt
 
     let addr = format!("127.0.0.1:{}", port);
     info!("Starting WebSocket server on {}", addr);
+    debug!("Attempting to bind TCP listener to {}", addr);
     
-    let listener = TcpListener::bind(&addr).await?;
-    info!("WebSocket server listening on {}", addr);
+    let listener = TcpListener::bind(&addr).await.map_err(|e| {
+        error!("Failed to bind WebSocket server to {}: {}", addr, e);
+        debug!("Bind error details: {:?}", e);
+        e
+    })?;
+    
+    info!("WebSocket server successfully listening on {}", addr);
+    debug!("TCP listener bound and ready to accept connections");
     
     // Shared state for managing connections
     let server_state = Arc::new(ServerState::new(worktree));
     
     // Create lock file for CLI discovery
-    create_lock_file(port, &server_state).await?;
+    debug!("Creating lock file for port {}", port);
+    create_lock_file(port, &server_state).await.map_err(|e| {
+        error!("Failed to create lock file for port {}: {}", port, e);
+        debug!("Lock file creation error details: {:?}", e);
+        e
+    })?;
+    debug!("Lock file created successfully");
     
     // Setup graceful shutdown
     let shutdown_port = port;
@@ -227,9 +272,30 @@ pub async fn run_websocket_server_with_worktree(port: Option<u16>, worktree: Opt
     tokio::spawn(ping_keepalive_task(ping_state));
     
     while let Ok((stream, addr)) = listener.accept().await {
-        info!("New connection from {}", addr);
+        info!("New TCP connection from {}", addr);
+        
+        // Log detailed connection information
+        if let Ok(peer_addr) = stream.peer_addr() {
+            debug!("Peer address confirmed: {}", peer_addr);
+        }
+        if let Ok(local_addr) = stream.local_addr() {
+            debug!("Local address: {}", local_addr);
+        }
+        
+        // Log socket options for debugging
+        debug!("TCP connection details for {}: nodelay={:?}, keepalive={:?}", 
+               addr, 
+               stream.nodelay().unwrap_or(false),
+               "unknown" // keepalive info not easily accessible
+        );
+        
         let state = Arc::clone(&server_state);
-        tokio::spawn(handle_connection(stream, addr, state));
+        tokio::spawn(async move {
+            if let Err(e) = handle_connection(stream, addr, state).await {
+                error!("Connection handler error for {}: {}", addr, e);
+                debug!("Connection handler error details: {:?}", e);
+            }
+        });
     }
     
     Ok(())
@@ -237,22 +303,39 @@ pub async fn run_websocket_server_with_worktree(port: Option<u16>, worktree: Opt
 
 // WebSocket connection handler with authentication
 async fn handle_connection(
-    stream: TcpStream,
+    mut stream: TcpStream,
     addr: SocketAddr,
     state: Arc<ServerState>,
 ) -> Result<()> {
-    let ws_stream = match accept_async(stream).await {
-        Ok(ws) => ws,
+    debug!("Starting WebSocket handshake for connection from {}", addr);
+    
+    // Log TCP connection details
+    if let Ok(local_addr) = stream.local_addr() {
+        debug!("Local endpoint: {}", local_addr);
+    }
+    if let Ok(peer_addr) = stream.peer_addr() {
+        debug!("Peer endpoint: {}", peer_addr);
+    }
+    
+    // Capture initial handshake attempt with detailed error context
+    let ws_stream = match accept_async_with_context(&mut stream, addr).await {
+        Ok(ws) => {
+            info!("WebSocket handshake successful for {}", addr);
+            ws
+        },
         Err(e) => {
-            error!("Failed to accept WebSocket connection: {}", e);
+            error!("Failed to accept WebSocket connection from {}: {}", addr, e);
+            debug!("WebSocket handshake error details: {:?}", e);
             return Ok(());
         }
     };
     
     let connection_id = Uuid::new_v4().to_string();
     info!("WebSocket connection established: {} ({})", connection_id, addr);
+    debug!("WebSocket connection details - ID: {}, Address: {}", connection_id, addr);
     
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
+    debug!("WebSocket stream split successfully for {}", connection_id);
     
     // Store connection ID with connection info
     {
@@ -266,44 +349,61 @@ async fn handle_connection(
     }
     
     // Handle incoming messages
+    debug!("Starting message loop for connection: {}", connection_id);
     while let Some(msg) = ws_receiver.next().await {
+        debug!("Received WebSocket message from {}: {:?}", connection_id, msg);
         match msg {
             Ok(Message::Text(text)) => {
-                debug!("Received message: {}", text);
+                debug!("Processing text message from {}: {}", connection_id, text);
                 
                 match serde_json::from_str::<JsonRpcRequest>(&text) {
                     Ok(request) => {
+                        debug!("Parsed JSON-RPC request from {}: method={}, id={:?}", connection_id, request.method, request.id);
                         let response = handle_jsonrpc_request(request, &state).await;
                         if let Some(resp) = response {
                             let response_text = serde_json::to_string(&resp)?;
+                            debug!("Sending response to {}: {}", connection_id, response_text);
                             
                             if let Err(e) = ws_sender.send(Message::Text(response_text)).await {
-                                error!("Failed to send response: {}", e);
+                                error!("Failed to send response to {}: {}", connection_id, e);
+                                debug!("WebSocket send error details: {:?}", e);
                                 break;
                             }
+                        } else {
+                            debug!("No response needed for request from {}", connection_id);
                         }
                     }
                     Err(e) => {
-                        error!("Failed to parse JSON-RPC request: {}", e);
+                        error!("Failed to parse JSON-RPC request from {}: {}", connection_id, e);
+                        debug!("Invalid JSON received from {}: {}", connection_id, text);
+                        debug!("Parse error details: {:?}", e);
+                        
                         let error_response = JsonRpcResponse {
                             jsonrpc: "2.0".to_string(),
                             result: None,
                             error: Some(JsonRpcError {
                                 code: PARSE_ERROR,
                                 message: "Parse error".to_string(),
-                                data: Some(serde_json::json!({"details": e.to_string()})),
+                                data: Some(serde_json::json!({
+                                    "details": e.to_string(),
+                                    "received_text": text.chars().take(200).collect::<String>() // First 200 chars for debugging
+                                })),
                             }),
                             id: None,
                         };
                         
                         if let Ok(response_text) = serde_json::to_string(&error_response) {
+                            debug!("Sending parse error response to {}", connection_id);
                             let _ = ws_sender.send(Message::Text(response_text)).await;
+                        } else {
+                            error!("Failed to serialize error response for {}", connection_id);
                         }
                     }
                 }
             }
-            Ok(Message::Close(_)) => {
-                info!("WebSocket connection closed: {}", connection_id);
+            Ok(Message::Close(close_frame)) => {
+                info!("WebSocket connection closed by client: {}", connection_id);
+                debug!("Close frame details: {:?}", close_frame);
                 break;
             }
             Ok(Message::Ping(payload)) => {
@@ -317,20 +417,36 @@ async fn handle_connection(
                 {
                     let mut connections = state.connections.write().await;
                     if let Some(conn_info) = connections.get_mut(&connection_id) {
-                        conn_info.last_pong = Instant::now();
-                        debug!("Received pong from connection: {}", connection_id);
+                        let now = Instant::now();
+                        conn_info.last_pong = now;
+                        debug!("Received pong from connection: {} at {:?}", connection_id, now);
+                    } else {
+                        warn!("Received pong from unknown connection: {}", connection_id);
                     }
                 }
             }
-            Ok(Message::Binary(_)) => {
-                warn!("Received binary message, ignoring");
+            Ok(Message::Binary(data)) => {
+                warn!("Received binary message from {}, ignoring (length: {})", connection_id, data.len());
+                debug!("Binary data preview: {:?}", data.get(0..std::cmp::min(20, data.len())));
             }
-            Ok(Message::Frame(_)) => {
+            Ok(Message::Frame(frame)) => {
                 // Handle frame messages (typically handled internally)
-                debug!("Received frame message");
+                debug!("Received frame message from {}: {:?}", connection_id, frame);
             }
             Err(e) => {
-                error!("WebSocket error: {}", e);
+                error!("WebSocket error on connection {}: {}", connection_id, e);
+                debug!("WebSocket error details: {:?}", e);
+                
+                // Try to categorize the error for better debugging
+                if e.to_string().contains("Connection reset") {
+                    info!("Client {} disconnected abruptly (connection reset)", connection_id);
+                } else if e.to_string().contains("Protocol") {
+                    warn!("WebSocket protocol error on {}: possibly invalid client", connection_id);
+                } else if e.to_string().contains("Closed") {
+                    info!("WebSocket connection {} closed normally", connection_id);
+                } else {
+                    warn!("Unexpected WebSocket error on {}: {}", connection_id, e);
+                }
                 break;
             }
         }
@@ -339,10 +455,15 @@ async fn handle_connection(
     // Clean up connection
     {
         let mut connections = state.connections.write().await;
-        connections.remove(&connection_id);
+        if connections.remove(&connection_id).is_some() {
+            debug!("Connection {} removed from active connections list", connection_id);
+        } else {
+            warn!("Connection {} was not found in active connections list during cleanup", connection_id);
+        }
     }
     
-    info!("WebSocket connection closed: {} ({})", connection_id, addr);
+    info!("WebSocket connection handler finished: {} ({})", connection_id, addr);
+    debug!("Final cleanup completed for connection {}", connection_id);
     Ok(())
 }
 
@@ -353,6 +474,13 @@ async fn handle_jsonrpc_request(
 ) -> Option<JsonRpcResponse> {
     // Only respond to requests with an ID (not notifications)
     let id = request.id.clone();
+    
+    debug!("Handling JSON-RPC request: method={}, id={:?}, has_params={}", 
+           request.method, id, request.params.is_some());
+    
+    if let Some(ref params) = request.params {
+        debug!("Request parameters: {}", serde_json::to_string(params).unwrap_or_else(|_| "<invalid_json>".to_string()));
+    }
     
     match request.method.as_str() {
         "initialize" => {
@@ -841,37 +969,226 @@ async fn ping_keepalive_task(state: Arc<ServerState>) {
     let mut interval = interval(Duration::from_secs(30)); // Ping every 30 seconds
     let timeout_duration = Duration::from_secs(60); // Consider connection dead after 60 seconds
     
+    info!("Starting ping keepalive task (ping every 30s, timeout after 60s)");
+    
     loop {
         interval.tick().await;
         
         let mut connections_to_remove = Vec::new();
         let now = Instant::now();
         
+        debug!("Running connection keepalive check at {:?}", now);
+        
         // Check all connections for timeout
         {
             let connections = state.connections.read().await;
+            debug!("Checking {} active connections for timeout", connections.len());
+            
             for (connection_id, conn_info) in connections.iter() {
+                let time_since_pong = now.duration_since(conn_info.last_pong);
+                
+                debug!("Connection {}: last_pong was {:.1}s ago (timeout at {:.1}s)", 
+                       connection_id, 
+                       time_since_pong.as_secs_f64(),
+                       timeout_duration.as_secs_f64());
+                
                 // Check if connection is still alive (received pong within timeout)
-                if now.duration_since(conn_info.last_pong) > timeout_duration {
-                    warn!("Connection {} appears dead, marking for removal", connection_id);
+                if time_since_pong > timeout_duration {
+                    warn!("Connection {} appears dead (last pong {:.1}s ago), marking for removal", 
+                          connection_id, time_since_pong.as_secs_f64());
                     connections_to_remove.push(connection_id.clone());
+                } else {
+                    debug!("Connection {} is healthy (last pong {:.1}s ago)", 
+                           connection_id, time_since_pong.as_secs_f64());
                 }
             }
         }
         
         // Remove dead connections
         if !connections_to_remove.is_empty() {
+            warn!("Removing {} dead connections", connections_to_remove.len());
             let mut connections = state.connections.write().await;
             for connection_id in &connections_to_remove {
-                connections.remove(connection_id);
-                info!("Removed dead connection: {}", connection_id);
+                if connections.remove(connection_id).is_some() {
+                    info!("Removed dead connection: {}", connection_id);
+                } else {
+                    warn!("Connection {} was already removed", connection_id);
+                }
             }
         }
         
         // Log connection count
         let connection_count = state.connections.read().await.len();
         if connection_count > 0 {
-            debug!("Active connections: {}", connection_count);
+            debug!("Keepalive check complete: {} active connections remaining", connection_count);
+        } else {
+            debug!("No active connections");
         }
+    }
+}
+
+// Enhanced WebSocket accept with detailed context logging
+async fn accept_async_with_context(
+    stream: &mut TcpStream,
+    addr: SocketAddr,
+) -> Result<tokio_tungstenite::WebSocketStream<&mut TcpStream>, tokio_tungstenite::tungstenite::Error> {
+    debug!("Starting enhanced WebSocket handshake analysis for {}", addr);
+    
+    // Try to peek at the initial data to analyze the request
+    let mut peek_buffer = [0u8; 1024];
+    match stream.try_read(&mut peek_buffer) {
+        Ok(n) if n > 0 => {
+            debug!("Read {} bytes from TCP stream for analysis", n);
+            let request_data = String::from_utf8_lossy(&peek_buffer[..n]);
+            debug!("Raw HTTP request from {}:\n{}", addr, request_data);
+            
+            // Analyze HTTP headers
+            analyze_http_request(&request_data, addr);
+        }
+        Ok(_) => {
+            warn!("No data available to read from {}", addr);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            debug!("No immediate data available from {} (would block)", addr);
+        }
+        Err(e) => {
+            warn!("Error peeking at TCP data from {}: {}", addr, e);
+        }
+    }
+    
+    // Proceed with normal WebSocket handshake
+    tokio_tungstenite::accept_async(stream).await
+}
+
+// Analyze HTTP request headers for debugging
+fn analyze_http_request(request_data: &str, addr: SocketAddr) {
+    debug!("Analyzing HTTP request from {}", addr);
+    
+    let lines: Vec<&str> = request_data.lines().collect();
+    if lines.is_empty() {
+        warn!("Empty HTTP request from {}", addr);
+        return;
+    }
+    
+    // Parse request line
+    let request_line = lines[0];
+    debug!("Request line from {}: {}", addr, request_line);
+    
+    if !request_line.starts_with("GET") {
+        warn!("Non-GET request from {}: {}", addr, request_line);
+    }
+    
+    // Parse headers
+    let mut headers = HashMap::new();
+    for line in lines.iter().skip(1) {
+        if line.is_empty() {
+            break; // End of headers
+        }
+        
+        if let Some((key, value)) = line.split_once(':') {
+            let key = key.trim().to_lowercase();
+            let value = value.trim();
+            headers.insert(key.clone(), value.to_string());
+            debug!("Header from {}: {} = {}", addr, key, value);
+        }
+    }
+    
+    // Check required WebSocket headers
+    debug!("Checking WebSocket headers for {}", addr);
+    
+    // Check Connection header
+    match headers.get("connection") {
+        Some(conn) if conn.to_lowercase().contains("upgrade") => {
+            debug!("✓ Connection header OK for {}: {}", addr, conn);
+        }
+        Some(conn) => {
+            error!("✗ Invalid Connection header from {}: '{}' (should contain 'upgrade')", addr, conn);
+        }
+        None => {
+            error!("✗ Missing Connection header from {}", addr);
+        }
+    }
+    
+    // Check Upgrade header
+    match headers.get("upgrade") {
+        Some(upgrade) if upgrade.to_lowercase() == "websocket" => {
+            debug!("✓ Upgrade header OK for {}: {}", addr, upgrade);
+        }
+        Some(upgrade) => {
+            error!("✗ Invalid Upgrade header from {}: '{}' (should be 'websocket')", addr, upgrade);
+        }
+        None => {
+            error!("✗ Missing Upgrade header from {}", addr);
+        }
+    }
+    
+    // Check WebSocket version
+    match headers.get("sec-websocket-version") {
+        Some(version) if version == "13" => {
+            debug!("✓ WebSocket version OK for {}: {}", addr, version);
+        }
+        Some(version) => {
+            warn!("⚠ Unusual WebSocket version from {}: {} (expected 13)", addr, version);
+        }
+        None => {
+            error!("✗ Missing Sec-WebSocket-Version header from {}", addr);
+        }
+    }
+    
+    // Check WebSocket key
+    match headers.get("sec-websocket-key") {
+        Some(key) => {
+            debug!("✓ WebSocket key present for {}: {} chars", addr, key.len());
+        }
+        None => {
+            error!("✗ Missing Sec-WebSocket-Key header from {}", addr);
+        }
+    }
+    
+    // Check Host header
+    match headers.get("host") {
+        Some(host) => {
+            debug!("✓ Host header for {}: {}", addr, host);
+        }
+        None => {
+            warn!("⚠ Missing Host header from {}", addr);
+        }
+    }
+    
+    // Check User-Agent
+    match headers.get("user-agent") {
+        Some(ua) => {
+            debug!("User-Agent from {}: {}", addr, ua);
+        }
+        None => {
+            debug!("No User-Agent header from {}", addr);
+        }
+    }
+    
+    // Check Origin
+    match headers.get("origin") {
+        Some(origin) => {
+            debug!("Origin from {}: {}", addr, origin);
+        }
+        None => {
+            debug!("No Origin header from {}", addr);
+        }
+    }
+    
+    // Log all headers for complete debugging
+    debug!("All headers from {} (count: {}):", addr, headers.len());
+    for (key, value) in &headers {
+        debug!("  {}: {}", key, value);
+    }
+    
+    // Determine likely issue
+    if !headers.contains_key("connection") || !headers.contains_key("upgrade") {
+        error!("❌ DIAGNOSIS for {}: Missing required WebSocket headers - client may not be sending proper WebSocket upgrade request", addr);
+    } else if !headers.get("connection").unwrap().to_lowercase().contains("upgrade") {
+        error!("❌ DIAGNOSIS for {}: Connection header does not contain 'upgrade' - this is the exact error being reported", addr);
+    } else if headers.get("upgrade").unwrap().to_lowercase() != "websocket" {
+        error!("❌ DIAGNOSIS for {}: Upgrade header is not 'websocket'", addr);
+    } else {
+        debug!("✅ DIAGNOSIS for {}: WebSocket headers appear correct - error may be elsewhere", addr);
     }
 }
