@@ -7,8 +7,8 @@ mod lsp;
 mod mcp;
 mod websocket;
 
-use lsp::run_lsp_server;
-use websocket::{run_websocket_server, run_websocket_server_with_worktree};
+use lsp::{run_lsp_server, run_lsp_server_with_notifications};
+use websocket::{run_websocket_server, run_websocket_server_with_notifications};
 
 #[derive(Parser)]
 #[command(name = "claude-code-server")]
@@ -36,13 +36,13 @@ enum Mode {
     },
     /// Run as standalone WebSocket server for Claude Code CLI
     Websocket {
-        /// WebSocket server port (random if not specified)
+        /// WebSocket server port (default: 59791)
         #[arg(long, short)]
         port: Option<u16>,
     },
     /// Run both LSP and WebSocket servers
     Hybrid {
-        /// WebSocket server port (random if not specified)
+        /// WebSocket server port (default: 59791)
         #[arg(long, short)]
         port: Option<u16>,
         /// Worktree root path
@@ -112,9 +112,20 @@ async fn run_hybrid_server(port: Option<u16>, worktree: Option<PathBuf>) -> Resu
         info!("Worktree path: {}", path.display());
     }
 
-    // In hybrid mode, we run both servers
-    let websocket_handle = tokio::spawn(run_websocket_server_with_worktree(port, worktree.clone()));
-    let lsp_handle = tokio::spawn(run_lsp_server(worktree));
+    // Create notification channel for LSP -> WebSocket communication
+    let (notification_sender, notification_receiver) = tokio::sync::broadcast::channel(100);
+    let notification_sender = std::sync::Arc::new(notification_sender);
+
+    // In hybrid mode, we run both servers with notification bridge
+    let websocket_handle = tokio::spawn(run_websocket_server_with_notifications(
+        port, 
+        worktree.clone(), 
+        Some(notification_receiver)
+    ));
+    let lsp_handle = tokio::spawn(run_lsp_server_with_notifications(
+        worktree, 
+        Some(notification_sender)
+    ));
 
     // Wait for either to complete (or fail)
     tokio::select! {

@@ -28,9 +28,9 @@ impl Extension for ClaudeCodeExtension {
                     command: server_path,
                     args: vec![
                         "--debug".to_string(),
-                        "lsp".to_string(),
                         "--worktree".to_string(),
                         worktree.root_path().to_string(),
+                        "hybrid".to_string(),
                     ],
                     env: Default::default(),
                 })

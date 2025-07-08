@@ -1,20 +1,87 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::broadcast;
 use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
-use tracing::info;
+use tracing::{info, debug};
+
+// Notification structures for IDE to Claude communication
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SelectionChangedNotification {
+    pub text: String,
+    #[serde(rename = "filePath")]
+    pub file_path: String,
+    #[serde(rename = "fileUrl")]
+    pub file_url: String,
+    pub selection: SelectionInfo,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SelectionInfo {
+    pub start: Position,
+    pub end: Position,
+    #[serde(rename = "isEmpty")]
+    pub is_empty: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AtMentionedNotification {
+    #[serde(rename = "filePath")]
+    pub file_path: String,
+    #[serde(rename = "lineStart")]
+    pub line_start: u32,
+    #[serde(rename = "lineEnd")]
+    pub line_end: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JsonRpcNotification {
+    pub jsonrpc: String,
+    pub method: String,
+    pub params: serde_json::Value,
+}
+
+// Channel for sending notifications from LSP to MCP
+pub type NotificationSender = broadcast::Sender<JsonRpcNotification>;
+pub type NotificationReceiver = broadcast::Receiver<JsonRpcNotification>;
 
 #[derive(Debug)]
 pub struct ClaudeCodeLanguageServer {
     client: Client,
     worktree: Option<PathBuf>,
+    notification_sender: Option<Arc<NotificationSender>>,
 }
 
 impl ClaudeCodeLanguageServer {
     pub fn new(client: Client, worktree: Option<PathBuf>) -> Self {
-        Self { client, worktree }
+        Self { 
+            client, 
+            worktree,
+            notification_sender: None,
+        }
+    }
+    
+    pub fn with_notification_sender(mut self, sender: Arc<NotificationSender>) -> Self {
+        self.notification_sender = Some(sender);
+        self
+    }
+    
+    async fn send_notification(&self, method: &str, params: serde_json::Value) {
+        if let Some(sender) = &self.notification_sender {
+            let notification = JsonRpcNotification {
+                jsonrpc: "2.0".to_string(),
+                method: method.to_string(),
+                params,
+            };
+            
+            if let Err(e) = sender.send(notification) {
+                debug!("Failed to send notification: {}", e);
+            }
+        }
     }
 }
 
@@ -41,6 +108,7 @@ impl LanguageServer for ClaudeCodeLanguageServer {
                     all_commit_characters: None,
                     completion_item: None,
                 }),
+                selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
@@ -51,6 +119,7 @@ impl LanguageServer for ClaudeCodeLanguageServer {
                         "claude-code.explain".to_string(),
                         "claude-code.improve".to_string(),
                         "claude-code.fix".to_string(),
+                        "claude-code.at-mention".to_string(),
                     ],
                     work_done_progress_options: Default::default(),
                 }),
@@ -159,6 +228,21 @@ impl LanguageServer for ClaudeCodeLanguageServer {
 
     async fn code_action(&self, params: CodeActionParams) -> LspResult<Option<CodeActionResponse>> {
         info!("Code action requested for range: {:?}", params.range);
+        
+        // Send selection_changed notification when code action is requested
+        let selection_notification = SelectionChangedNotification {
+            text: "selected text content".to_string(), // In a real implementation, this would be the actual selected text
+            file_path: params.text_document.uri.path().to_string(),
+            file_url: params.text_document.uri.to_string(),
+            selection: SelectionInfo {
+                start: params.range.start,
+                end: params.range.end,
+                is_empty: params.range.start == params.range.end,
+            },
+        };
+        
+        info!("Sending selection_changed notification for range: {:?}", params.range);
+        self.send_notification("selection_changed", serde_json::to_value(selection_notification).unwrap()).await;
 
         let actions = vec![CodeActionOrCommand::CodeAction(CodeAction {
             title: "Explain with Claude".to_string(),
@@ -206,6 +290,39 @@ impl LanguageServer for ClaudeCodeLanguageServer {
                     )
                     .await;
             }
+            "claude-code.at-mention" => {
+                info!("At-mention command executed with args: {:?}", params.arguments);
+                
+                // Parse arguments to extract file path and line range
+                if let Some(args) = params.arguments.first() {
+                    if let Ok(mention_data) = serde_json::from_value::<serde_json::Value>(args.clone()) {
+                        let file_path = mention_data.get("filePath")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let line_start = mention_data.get("lineStart")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u32;
+                        let line_end = mention_data.get("lineEnd")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u32;
+                            
+                        let at_mention_notification = AtMentionedNotification {
+                            file_path: file_path.to_string(),
+                            line_start,
+                            line_end,
+                        };
+                        
+                        self.send_notification("at_mentioned", serde_json::to_value(at_mention_notification).unwrap()).await;
+                        
+                        self.client
+                            .show_message(
+                                MessageType::INFO,
+                                format!("At-mention sent for {}:{}-{}", file_path, line_start, line_end),
+                            )
+                            .await;
+                    }
+                }
+            }
             _ => {
                 self.client
                     .show_message(
@@ -218,9 +335,60 @@ impl LanguageServer for ClaudeCodeLanguageServer {
 
         Ok(None)
     }
+
+    async fn selection_range(&self, params: SelectionRangeParams) -> LspResult<Option<Vec<SelectionRange>>> {
+        info!("Selection range requested for {} positions", params.positions.len());
+        
+        // For each position, create a selection range and notify about the selection
+        let mut ranges = Vec::new();
+        
+        for position in &params.positions {
+            info!("Selection at {}:{}", position.line, position.character);
+            
+            // Create a basic selection range (this would normally be more sophisticated)
+            let range = Range {
+                start: *position,
+                end: Position {
+                    line: position.line,
+                    character: position.character + 1,
+                },
+            };
+            
+            ranges.push(SelectionRange {
+                range,
+                parent: None,
+            });
+            
+            // Send selection_changed notification
+            let selection_notification = SelectionChangedNotification {
+                text: "".to_string(), // Would normally get actual selected text
+                file_path: params.text_document.uri.path().to_string(),
+                file_url: params.text_document.uri.to_string(),
+                selection: SelectionInfo {
+                    start: *position,
+                    end: Position {
+                        line: position.line,
+                        character: position.character + 1,
+                    },
+                    is_empty: true,
+                },
+            };
+            
+            self.send_notification("selection_changed", serde_json::to_value(selection_notification).unwrap()).await;
+        }
+        
+        Ok(Some(ranges))
+    }
 }
 
 pub async fn run_lsp_server(worktree: Option<PathBuf>) -> Result<()> {
+    run_lsp_server_with_notifications(worktree, None).await
+}
+
+pub async fn run_lsp_server_with_notifications(
+    worktree: Option<PathBuf>, 
+    notification_sender: Option<Arc<NotificationSender>>
+) -> Result<()> {
     info!("Starting LSP server mode");
     if let Some(path) = &worktree {
         info!("Worktree path: {}", path.display());
@@ -229,8 +397,13 @@ pub async fn run_lsp_server(worktree: Option<PathBuf>) -> Result<()> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) =
-        LspService::new(|client| ClaudeCodeLanguageServer::new(client, worktree));
+    let (service, socket) = LspService::new(|client| {
+        let mut server = ClaudeCodeLanguageServer::new(client, worktree.clone());
+        if let Some(sender) = notification_sender.clone() {
+            server = server.with_notification_sender(sender);
+        }
+        server
+    });
     Server::new(stdin, stdout, socket).serve(service).await;
 
     Ok(())
