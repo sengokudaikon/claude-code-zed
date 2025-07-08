@@ -110,19 +110,6 @@ Zed Editor (WASM)  ←→  LSP  ←→  Native Server  ←→  WebSocket  ←→
 
 ## Development
 
-### Zed Extension Stack
-- **Rust + WASM**: Core extension logic
-- **Zed Extension API**: Editor integration
-- **LSP Client**: Communication with companion server
-- **Serde**: JSON serialization
-
-### Companion Server Stack
-- **Native Rust**: Full system access
-- **Tokio**: Async runtime
-- **Tungstenite**: WebSocket implementation
-- **LSP Server**: Communication with Zed extension
-- **Serde**: JSON-RPC protocol handling
-
 ### Debugging & Logs
 
 Both components include comprehensive logging:
@@ -142,28 +129,6 @@ RUST_LOG=debug claude-code-server
 3. Make your changes
 4. Test with Zed
 5. Submit a pull request
-
-## Current Status
-
-**🚧 In Development**
-
-This project is actively being developed with a two-component architecture to overcome WASM limitations:
-
-### Completed
-- ✅ Zed extension architecture (WASM-compatible)
-- ✅ Protocol specification and design
-- ✅ Claude Code protocol research
-
-### In Progress
-- 🔄 LSP server implementation for Zed ↔ Server communication
-- 🔄 Native companion server development
-- 🔄 WebSocket protocol implementation
-
-### Planned
-- 📋 End-to-end integration testing
-- 📋 Authentication and security implementation
-- 📋 Error handling and resilience
-- 📋 Documentation and examples
 
 ### Architecture Benefits
 
