@@ -7,12 +7,16 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::signal;
 use tokio::sync::RwLock;
+use tokio::time::interval;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+use crate::tools::{ToolRegistry, create_default_registry};
 
 // JSON-RPC 2.0 message types for Claude Code protocol
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,12 +49,62 @@ pub struct JsonRpcNotification {
     pub params: Option<Value>,
 }
 
+// MCP protocol constants
+const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+
+// MCP error codes
+const PARSE_ERROR: i32 = -32700;
+const INVALID_PARAMS: i32 = -32602;
+const INTERNAL_ERROR: i32 = -32603;
+
+// MCP capabilities
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpCapabilities {
+    pub logging: serde_json::Map<String, Value>,
+    pub prompts: McpPromptsCapability,
+    pub resources: McpResourcesCapability,
+    pub tools: McpToolsCapability,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpPromptsCapability {
+    #[serde(rename = "listChanged")]
+    pub list_changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpResourcesCapability {
+    pub subscribe: bool,
+    #[serde(rename = "listChanged")]
+    pub list_changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolsCapability {
+    #[serde(rename = "listChanged")]
+    pub list_changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerInfo {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug)]
+pub struct ConnectionInfo {
+    pub addr: String,
+    pub last_ping: Instant,
+    pub last_pong: Instant,
+}
+
 #[derive(Debug)]
 pub struct ServerState {
-    pub connections: Arc<RwLock<HashMap<String, String>>>,
+    pub connections: Arc<RwLock<HashMap<String, ConnectionInfo>>>,
     pub auth_token: String,
     pub workspace_folders: Vec<String>,
     pub ide_name: String,
+    pub tool_registry: ToolRegistry,
 }
 
 impl ServerState {
@@ -71,6 +125,7 @@ impl ServerState {
             auth_token,
             workspace_folders,
             ide_name: "claude-code-server".to_string(),
+            tool_registry: create_default_registry(),
         }
     }
 }
@@ -167,6 +222,10 @@ pub async fn run_websocket_server_with_worktree(port: Option<u16>, worktree: Opt
         }
     });
     
+    // Start ping keepalive task
+    let ping_state = Arc::clone(&server_state);
+    tokio::spawn(ping_keepalive_task(ping_state));
+    
     while let Ok((stream, addr)) = listener.accept().await {
         info!("New connection from {}", addr);
         let state = Arc::clone(&server_state);
@@ -195,10 +254,15 @@ async fn handle_connection(
     
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
     
-    // Store connection ID
+    // Store connection ID with connection info
     {
         let mut connections = state.connections.write().await;
-        connections.insert(connection_id.clone(), addr.to_string());
+        let now = Instant::now();
+        connections.insert(connection_id.clone(), ConnectionInfo {
+            addr: addr.to_string(),
+            last_ping: now,
+            last_pong: now,
+        });
     }
     
     // Handle incoming messages
@@ -225,7 +289,7 @@ async fn handle_connection(
                             jsonrpc: "2.0".to_string(),
                             result: None,
                             error: Some(JsonRpcError {
-                                code: -32700,
+                                code: PARSE_ERROR,
                                 message: "Parse error".to_string(),
                                 data: Some(serde_json::json!({"details": e.to_string()})),
                             }),
@@ -249,7 +313,14 @@ async fn handle_connection(
                 }
             }
             Ok(Message::Pong(_)) => {
-                // Ignore pong messages
+                // Update last pong time for keepalive tracking
+                {
+                    let mut connections = state.connections.write().await;
+                    if let Some(conn_info) = connections.get_mut(&connection_id) {
+                        conn_info.last_pong = Instant::now();
+                        debug!("Received pong from connection: {}", connection_id);
+                    }
+                }
             }
             Ok(Message::Binary(_)) => {
                 warn!("Received binary message, ignoring");
@@ -284,47 +355,94 @@ async fn handle_jsonrpc_request(
     let id = request.id.clone();
     
     match request.method.as_str() {
+        "initialize" => {
+            info!("Received initialize request");
+            Some(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": McpCapabilities {
+                        logging: serde_json::Map::new(),
+                        prompts: McpPromptsCapability { list_changed: true },
+                        resources: McpResourcesCapability { subscribe: true, list_changed: true },
+                        tools: McpToolsCapability { list_changed: true },
+                    },
+                    "serverInfo": McpServerInfo {
+                        name: "claude-code-server".to_string(),
+                        version: "0.1.0".to_string(),
+                    }
+                })),
+                error: None,
+                id,
+            })
+        }
+        "prompts/list" => {
+            Some(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({
+                    "prompts": []
+                })),
+                error: None,
+                id,
+            })
+        }
+        "tools/list" => {
+            let tool_list = state.tool_registry.get_tool_list();
+            Some(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(serde_json::json!({
+                    "tools": tool_list
+                })),
+                error: None,
+                id,
+            })
+        }
         "tools/call" => {
             let tool_name = request.params
                 .as_ref()
                 .and_then(|p| p.get("name"))
                 .and_then(|n| n.as_str());
             
+            let default_params = serde_json::json!({});
             let tool_params = request.params
                 .as_ref()
-                .and_then(|p| p.get("parameters"));
+                .and_then(|p| p.get("arguments"))
+                .unwrap_or(&default_params);
             
             match tool_name {
-                Some("openFile") => handle_open_file(tool_params, id).await,
-                Some("openDiff") => handle_open_diff(tool_params, id).await,
-                Some("getCurrentSelection") => handle_get_current_selection(tool_params, id).await,
-                Some("getOpenEditors") => handle_get_open_editors(tool_params, id).await,
-                Some("getWorkspaceFolders") => handle_get_workspace_folders(tool_params, id, state).await,
-                Some("getDiagnostics") => handle_get_diagnostics(tool_params, id).await,
-                Some("checkDocumentDirty") => handle_check_document_dirty(tool_params, id).await,
-                Some("saveDocument") => handle_save_document(tool_params, id).await,
-                Some("close_tab") => handle_close_tab(tool_params, id).await,
-                Some("closeAllDiffTabs") => handle_close_all_diff_tabs(tool_params, id).await,
-                Some("executeCode") => handle_execute_code(tool_params, id).await,
-                Some(unknown) => {
-                    warn!("Unknown tool: {}", unknown);
-                    Some(JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: -32601,
-                            message: "Method not found".to_string(),
-                            data: Some(serde_json::json!({"tool": unknown})),
-                        }),
-                        id,
-                    })
+                Some(name) => {
+                    debug!("Calling tool: {} with params: {:?}", name, tool_params);
+                    match state.tool_registry.call_tool(name, tool_params) {
+                        Ok(result) => {
+                            debug!("Tool {} completed successfully", name);
+                            Some(JsonRpcResponse {
+                                jsonrpc: "2.0".to_string(),
+                                result: Some(result),
+                                error: None,
+                                id,
+                            })
+                        }
+                        Err(tool_error) => {
+                            warn!("Tool {} failed: {:?}", name, tool_error);
+                            Some(JsonRpcResponse {
+                                jsonrpc: "2.0".to_string(),
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: tool_error.code,
+                                    message: tool_error.message,
+                                    data: tool_error.data,
+                                }),
+                                id,
+                            })
+                        }
+                    }
                 }
                 None => {
                     Some(JsonRpcResponse {
                         jsonrpc: "2.0".to_string(),
                         result: None,
                         error: Some(JsonRpcError {
-                            code: -32602,
+                            code: INVALID_PARAMS,
                             message: "Invalid params".to_string(),
                             data: Some(serde_json::json!({"error": "Missing tool name"})),
                         }),
@@ -332,6 +450,10 @@ async fn handle_jsonrpc_request(
                     })
                 }
             }
+        }
+        "notifications/initialized" => {
+            info!("Client initialized");
+            None // No response for notifications
         }
         "selection_changed" => {
             // Handle selection change notifications
@@ -382,7 +504,7 @@ async fn handle_open_file(params: Option<&Value>, id: Option<Value>) -> Option<J
                     jsonrpc: "2.0".to_string(),
                     result: None,
                     error: Some(JsonRpcError {
-                        code: -32603,
+                        code: INTERNAL_ERROR,
                         message: "Internal error".to_string(),
                         data: Some(serde_json::json!({"error": e.to_string()})),
                     }),
@@ -394,7 +516,7 @@ async fn handle_open_file(params: Option<&Value>, id: Option<Value>) -> Option<J
             jsonrpc: "2.0".to_string(),
             result: None,
             error: Some(JsonRpcError {
-                code: -32602,
+                code: INVALID_PARAMS,
                 message: "Invalid params".to_string(),
                 data: Some(serde_json::json!({"error": "Missing path parameter"})),
             }),
@@ -424,7 +546,7 @@ async fn handle_open_diff(params: Option<&Value>, id: Option<Value>) -> Option<J
             jsonrpc: "2.0".to_string(),
             result: None,
             error: Some(JsonRpcError {
-                code: -32602,
+                code: INVALID_PARAMS,
                 message: "Invalid params".to_string(),
                 data: Some(serde_json::json!({"error": "Missing path parameter"})),
             }),
@@ -514,7 +636,7 @@ async fn handle_save_document(params: Option<&Value>, id: Option<Value>) -> Opti
                     jsonrpc: "2.0".to_string(),
                     result: None,
                     error: Some(JsonRpcError {
-                        code: -32603,
+                        code: INTERNAL_ERROR,
                         message: "Internal error".to_string(),
                         data: Some(serde_json::json!({"error": e.to_string()})),
                     }),
@@ -526,7 +648,7 @@ async fn handle_save_document(params: Option<&Value>, id: Option<Value>) -> Opti
             jsonrpc: "2.0".to_string(),
             result: None,
             error: Some(JsonRpcError {
-                code: -32602,
+                code: INVALID_PARAMS,
                 message: "Invalid params".to_string(),
                 data: Some(serde_json::json!({"error": "Missing path or content parameter"})),
             }),
@@ -573,4 +695,183 @@ async fn handle_execute_code(params: Option<&Value>, id: Option<Value>) -> Optio
         error: None,
         id,
     })
+}
+
+// Get the list of available tools with their schemas
+fn get_tool_list() -> Vec<Value> {
+    vec![
+        serde_json::json!({
+            "name": "openFile",
+            "description": "Opens a file in the editor",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file to open"
+                    }
+                },
+                "required": ["path"]
+            }
+        }),
+        serde_json::json!({
+            "name": "getCurrentSelection",
+            "description": "Gets the current text selection in the editor",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }),
+        serde_json::json!({
+            "name": "getOpenEditors",
+            "description": "Gets a list of currently open editors",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }),
+        serde_json::json!({
+            "name": "openDiff",
+            "description": "Opens a diff view for a file",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file to diff"
+                    }
+                },
+                "required": ["path"]
+            }
+        }),
+        serde_json::json!({
+            "name": "saveDocument",
+            "description": "Saves a document with the given content",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file to save"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Content to save"
+                    }
+                },
+                "required": ["path", "content"]
+            }
+        }),
+        serde_json::json!({
+            "name": "getWorkspaceFolders",
+            "description": "Gets the current workspace folders",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }),
+        serde_json::json!({
+            "name": "getDiagnostics",
+            "description": "Gets diagnostics for the current workspace",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }),
+        serde_json::json!({
+            "name": "checkDocumentDirty",
+            "description": "Checks if a document has unsaved changes",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the document to check"
+                    }
+                },
+                "required": ["path"]
+            }
+        }),
+        serde_json::json!({
+            "name": "close_tab",
+            "description": "Closes a tab in the editor",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to the file to close"
+                    }
+                },
+                "required": ["path"]
+            }
+        }),
+        serde_json::json!({
+            "name": "closeAllDiffTabs",
+            "description": "Closes all diff tabs in the editor",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }),
+        serde_json::json!({
+            "name": "executeCode",
+            "description": "Executes code in the terminal",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Code to execute"
+                    }
+                },
+                "required": ["code"]
+            }
+        }),
+    ]
+}
+
+// Ping keepalive task to maintain WebSocket connections
+async fn ping_keepalive_task(state: Arc<ServerState>) {
+    let mut interval = interval(Duration::from_secs(30)); // Ping every 30 seconds
+    let timeout_duration = Duration::from_secs(60); // Consider connection dead after 60 seconds
+    
+    loop {
+        interval.tick().await;
+        
+        let mut connections_to_remove = Vec::new();
+        let now = Instant::now();
+        
+        // Check all connections for timeout
+        {
+            let connections = state.connections.read().await;
+            for (connection_id, conn_info) in connections.iter() {
+                // Check if connection is still alive (received pong within timeout)
+                if now.duration_since(conn_info.last_pong) > timeout_duration {
+                    warn!("Connection {} appears dead, marking for removal", connection_id);
+                    connections_to_remove.push(connection_id.clone());
+                }
+            }
+        }
+        
+        // Remove dead connections
+        if !connections_to_remove.is_empty() {
+            let mut connections = state.connections.write().await;
+            for connection_id in &connections_to_remove {
+                connections.remove(connection_id);
+                info!("Removed dead connection: {}", connection_id);
+            }
+        }
+        
+        // Log connection count
+        let connection_count = state.connections.read().await.len();
+        if connection_count > 0 {
+            debug!("Active connections: {}", connection_count);
+        }
+    }
 }

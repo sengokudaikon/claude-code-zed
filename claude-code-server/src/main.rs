@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use tracing::{error, info};
 
 mod lsp;
+mod tools;
 mod websocket;
 
 use lsp::run_lsp_server;
