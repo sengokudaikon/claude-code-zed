@@ -36,19 +36,18 @@ jobs:
     
     - name: Build binary
       run: |
-        cd claude-code-server
-        cargo build --release --target ${{ matrix.target }}
+        cargo build --release --target ${{ matrix.target }} --package claude-code-server
     
     - name: Prepare artifact (Unix)
       if: matrix.os != 'windows-latest'
       run: |
-        cp claude-code-server/target/${{ matrix.target }}/release/claude-code-server ${{ matrix.name }}
+        cp target/${{ matrix.target }}/release/claude-code-server ${{ matrix.name }}
         chmod +x ${{ matrix.name }}
     
     - name: Prepare artifact (Windows)
       if: matrix.os == 'windows-latest'
       run: |
-        cp claude-code-server/target/${{ matrix.target }}/release/claude-code-server.exe ${{ matrix.name }}
+        copy target/${{ matrix.target }}/release/claude-code-server.exe ${{ matrix.name }}
     
     - name: Upload artifact
       uses: actions/upload-artifact@v4
