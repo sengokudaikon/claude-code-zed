@@ -177,7 +177,6 @@ fn get_platform_binary_name() -> Result<String, String> {
         ("linux", "x86_64") => Ok("claude-code-server-linux-x86_64".to_string()),
         ("macos", "x86_64") => Ok("claude-code-server-macos-x86_64".to_string()),
         ("macos", "aarch64") => Ok("claude-code-server-macos-aarch64".to_string()),
-        ("windows", "x86_64") => Ok("claude-code-server-windows-x86_64.exe".to_string()),
         _ => Err(format!("Unsupported platform: {}-{}", os, arch)),
     }
 }
