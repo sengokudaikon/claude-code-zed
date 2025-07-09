@@ -143,221 +143,7 @@ impl MCPServer {
     async fn handle_tools_list(&self) -> Result<Value> {
         info!("Listing available tools");
 
-        let tools = vec![
-            Tool {
-                name: "echo".to_string(),
-                description: Some("Echo back the input text".to_string()),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "text": {
-                            "type": "string",
-                            "description": "Text to echo back"
-                        }
-                    },
-                    "required": ["text"]
-                }),
-            },
-            Tool {
-                name: "get_workspace_info".to_string(),
-                description: Some("Get information about the current workspace".to_string()),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "closeAllDiffTabs".to_string(),
-                description: Some("Close all diff tabs in the editor".to_string()),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "openFile".to_string(),
-                description: Some(
-                    "Open a file in the editor and optionally select a range of text".to_string(),
-                ),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "filePath": {
-                            "type": "string",
-                            "description": "Path to the file to open"
-                        },
-                        "preview": {
-                            "type": "boolean",
-                            "description": "Whether to open the file in preview mode",
-                            "default": false
-                        },
-                        "startText": {
-                            "type": "string",
-                            "description": "Text pattern to find the start of the selection range. Selects from the beginning of this match."
-                        },
-                        "endText": {
-                            "type": "string",
-                            "description": "Text pattern to find the end of the selection range. Selects up to the end of this match. If not provided, only the startText match will be selected."
-                        },
-                        "selectToEndOfLine": {
-                            "type": "boolean",
-                            "description": "If true, selection will extend to the end of the line containing the endText match.",
-                            "default": false
-                        },
-                        "makeFrontmost": {
-                            "type": "boolean",
-                            "description": "Whether to make the file the active editor tab. If false, the file will be opened in the background without changing focus.",
-                            "default": true
-                        }
-                    },
-                    "required": ["filePath"]
-                }),
-            },
-            Tool {
-                name: "getCurrentSelection".to_string(),
-                description: Some(
-                    "Get the current text selection in the active editor".to_string(),
-                ),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "getOpenEditors".to_string(),
-                description: Some("Get information about currently open editors".to_string()),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "getWorkspaceFolders".to_string(),
-                description: Some(
-                    "Get all workspace folders currently open in the IDE".to_string(),
-                ),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "openDiff".to_string(),
-                description: Some("Open a git diff for the file (blocking operation)".to_string()),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "old_file_path": {
-                            "type": "string",
-                            "description": "Path to original file"
-                        },
-                        "new_file_path": {
-                            "type": "string",
-                            "description": "Path to new file"
-                        },
-                        "new_file_contents": {
-                            "type": "string",
-                            "description": "Contents of the new file"
-                        },
-                        "tab_name": {
-                            "type": "string",
-                            "description": "Tab name for the diff view"
-                        }
-                    },
-                    "required": ["old_file_path", "new_file_path", "new_file_contents", "tab_name"]
-                }),
-            },
-            Tool {
-                name: "getLatestSelection".to_string(),
-                description: Some(
-                    "Get the most recent text selection (even if not in the active editor)"
-                        .to_string(),
-                ),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "getDiagnostics".to_string(),
-                description: Some("Get language diagnostics from VS Code".to_string()),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "uri": {
-                            "type": "string",
-                            "description": "File URI to get diagnostics for. If not provided, gets diagnostics for all files."
-                        }
-                    },
-                    "required": []
-                }),
-            },
-            Tool {
-                name: "checkDocumentDirty".to_string(),
-                description: Some("Check if a document has unsaved changes (is dirty)".to_string()),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "filePath": {
-                            "type": "string",
-                            "description": "Path to the file to check"
-                        }
-                    },
-                    "required": ["filePath"]
-                }),
-            },
-            Tool {
-                name: "saveDocument".to_string(),
-                description: Some("Save a document with unsaved changes".to_string()),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "filePath": {
-                            "type": "string",
-                            "description": "Path to the file to save"
-                        }
-                    },
-                    "required": ["filePath"]
-                }),
-            },
-            Tool {
-                name: "close_tab".to_string(),
-                description: Some("Close a tab by name".to_string()),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "tab_name": {
-                            "type": "string",
-                            "description": "Name of the tab to close"
-                        }
-                    },
-                    "required": ["tab_name"]
-                }),
-            },
-            Tool {
-                name: "executeCode".to_string(),
-                description: Some(
-                    "Execute python code in the Jupyter kernel for the current notebook file"
-                        .to_string(),
-                ),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "code": {
-                            "type": "string",
-                            "description": "The code to be executed on the kernel."
-                        }
-                    },
-                    "required": ["code"]
-                }),
-            },
-        ];
+        let tools: Vec<Tool> = vec![];
 
         Ok(serde_json::json!({
             "tools": tools
@@ -522,10 +308,16 @@ impl MCPServer {
                 info!("Opening diff for {} vs {}", old_file_path, new_file_path);
 
                 // Always respond with FILE_SAVED to simulate accepting the diff
-                vec![TextContent {
-                    type_: "text".to_string(),
-                    text: "FILE_SAVED".to_string(),
-                }]
+                vec![
+                    TextContent {
+                        type_: "text".to_string(),
+                        text: "FILE_SAVED".to_string(),
+                    },
+                    TextContent {
+                        type_: "text".to_string(),
+                        text: format!("Diff accepted: {} -> {}", old_file_path, new_file_path),
+                    }
+                ]
             }
             "getLatestSelection" => {
                 info!("Getting latest selection");

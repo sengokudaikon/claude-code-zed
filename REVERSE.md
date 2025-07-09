@@ -107,4 +107,61 @@ Sec-WebSocket-Protocol: mcp
 
 This prevents clients from closing the connection due to missing protocol confirmation.
 
+## MCP Response Format Changes
+
+### JavaScript Validation Functions
+The client-side JavaScript validates specific response patterns:
+
+```javascript
+// TAB_CLOSED validation
+function checkTabClosed(A) {
+  return A.type === "result" && Array.isArray(A.data) && 
+         A.data[0] === "object" && A.data[0] !== null && 
+         "type" in A.data[0] && A.data[0].type === "text" && 
+         "text" in A.data[0] && A.data[0].text === "TAB_CLOSED";
+}
+
+// FILE_SAVED validation (requires TWO text elements)
+function checkFileSaved(A) {
+  return A.type === "result" && Array.isArray(A.data) && 
+         A.data[0]?.type === "text" && A.data[0].text === "FILE_SAVED" && 
+         typeof A.data[1].text === "string";
+}
+
+// DIFF_REJECTED validation
+function checkDiffRejected(A) {
+  return A.type === "result" && Array.isArray(A.data) && 
+         typeof A.data[0] === "object" && A.data[0] !== null && 
+         "type" in A.data[0] && A.data[0].type === "text" && 
+         "text" in A.data[0] && A.data[0].text === "DIFF_REJECTED";
+}
+```
+
+### Server Response Format Updates
+Updated MCP server responses to match expected validation patterns:
+
+1. **TAB_CLOSED**: Single text element ✅
+   ```rust
+   vec![TextContent {
+       type_: "text".to_string(),
+       text: "TAB_CLOSED".to_string(),
+   }]
+   ```
+
+2. **FILE_SAVED**: Two text elements (first="FILE_SAVED", second=additional info) ✅
+   ```rust
+   vec![
+       TextContent {
+           type_: "text".to_string(),
+           text: "FILE_SAVED".to_string(),
+       },
+       TextContent {
+           type_: "text".to_string(),
+           text: format!("Diff accepted: {} -> {}", old_file_path, new_file_path),
+       }
+   ]
+   ```
+
+**Key Change**: FILE_SAVED responses now include two text elements instead of one, matching the client-side validation that expects `A.data[1].text` to be a string.
+
 
