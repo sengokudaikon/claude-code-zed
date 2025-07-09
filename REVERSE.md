@@ -4,13 +4,13 @@ This document records methods to capture and analyze network traffic for underst
 
 ## Process 
 
-- first the vscode extension will create the `[port].lock` file in `~/.claude/ide/`, port number is randomly generated.
+- First, the VS Code extension will create the `[port].lock` file in `~/.claude/ide/`, where the port number is randomly generated.
 
 ```json
 {"pid":45272,"workspaceFolders":["/home/isomo/rust/claude-code-zed"],"ideName":"Visual Studio Code","transport":"ws","authToken":"9048d76f-acab-4fbc-87be-1c7ab575d94e"}
 ```
 
-- then the claude code cli will check the lock file to try link the [port] on tcp, here we used the tcpdump tool to capture the traffic on port `59791`, then to start the claude code cli:
+- Then the Claude Code CLI will check the lock file to try linking to the [port] on TCP. Here we used the tcpdump tool to capture the traffic on port `59791`, then started the Claude Code CLI:
 
 ```bash
 sudo tcpdump -i lo -A -tttt port 59791
@@ -59,7 +59,7 @@ a..F:...a...-...e..Fv...i..F:..J0..P"..H"...n..."..V...H"..F:..
 2025-07-08 13:58:25.789587 IP localhost.59791 > localhost.46700: Flags [P.], seq 159:341, ack 536, win 512, options [nop,nop,TS val 596976788 ecr 596976787], length 182
 ```
 
-error traffic
+Error traffic
 
 ```bash
 2025-07-08T05:55:29.163716Z ERROR ThreadId(02) claude-code-server/src/websocket.rs:215: WebSocket error for 127.0.0.1:50614: WebSocket protocol error: Connection reset without closing handshake

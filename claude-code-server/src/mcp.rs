@@ -300,6 +300,10 @@ impl MCPServer {
                     .get("new_file_path")
                     .and_then(|v| v.as_str())
                     .unwrap_or("No new file path provided");
+                let new_file_contents = arguments
+                    .get("new_file_contents")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("No new file contents provided");
                 let _tab_name = arguments
                     .get("tab_name")
                     .and_then(|v| v.as_str())
@@ -315,8 +319,8 @@ impl MCPServer {
                     },
                     TextContent {
                         type_: "text".to_string(),
-                        text: format!("Diff accepted: {} -> {}", old_file_path, new_file_path),
-                    }
+                        text: new_file_contents.to_string(),
+                    },
                 ]
             }
             "getLatestSelection" => {
