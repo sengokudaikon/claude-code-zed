@@ -3,8 +3,11 @@ name: Build and Release Claude Code Server
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -24,47 +27,47 @@ jobs:
             name: claude-code-server-macos-aarch64
 
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        targets: ${{ matrix.target }}
-    
-    - name: Build binary
-      run: |
-        cargo build --release --target ${{ matrix.target }} --package claude-code-server
-    
-    - name: Prepare artifact
-      run: |
-        cp target/${{ matrix.target }}/release/claude-code-server ${{ matrix.name }}
-        chmod +x ${{ matrix.name }}
-    
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.name }}
-        path: ${{ matrix.name }}
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build binary
+        run: |
+          cargo build --release --target ${{ matrix.target }} --package claude-code-server
+
+      - name: Prepare artifact
+        run: |
+          cp target/${{ matrix.target }}/release/claude-code-server ${{ matrix.name }}
+          chmod +x ${{ matrix.name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
 
   release:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
-    
+
     steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          claude-code-server-linux-x86_64/claude-code-server-linux-x86_64
-          claude-code-server-macos-x86_64/claude-code-server-macos-x86_64
-          claude-code-server-macos-aarch64/claude-code-server-macos-aarch64
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            claude-code-server-linux-x86_64/claude-code-server-linux-x86_64
+            claude-code-server-macos-x86_64/claude-code-server-macos-x86_64
+            claude-code-server-macos-aarch64/claude-code-server-macos-aarch64
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
