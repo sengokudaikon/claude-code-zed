@@ -13,6 +13,67 @@ A two-part system that integrates Claude Code CLI with Zed editor for AI-assiste
 - **LSP Diagnostics**: Currently NOT implemented - Zed extension works as LSP client but doesn't expose IDE diagnostic information (errors, warnings, type hints) to Claude Code CLI
 - **One-way Communication**: Primary flow is Zed → Claude Code; limited Claude Code → Zed capabilities
 
+## Installation
+
+### Prerequisites
+- Zed editor
+- Claude Code CLI
+
+### Setup
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/jiahaoxiang2000/claude-code-zed.git
+   ```
+
+2. **Install the Zed extension** (Development Mode):
+   - Open Zed editor
+   - Press `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Linux/Windows) to open the command palette
+   - Type "zed: install dev extension" and select it
+   - Navigate to and select the `claude-code-extension` folder in your cloned repository
+   - The extension will be installed and activated automatically
+
+3. **The claude-code-server is automatically downloaded**:
+   - The extension will automatically download the appropriate `claude-code-server` binary for your platform from GitHub releases
+   - No manual build or installation of the server is required
+   - The server binary is cached in the extension's working directory
+
+### Supported Platforms
+- **macOS**: Intel (x86_64) and Apple Silicon (aarch64)
+- **Linux**: x86_64
+- **Windows**: Not currently supported
+
+### Language Server Activation
+
+The Claude Code extension runs as a Language Server Protocol (LSP) server and automatically activates when you open files with the following extensions:
+
+- **Rust** (`.rs`)
+- **JavaScript** (`.js`)
+- **TypeScript** (`.ts`, `.tsx`)
+- **Python** (`.py`)
+- **Markdown** (`.md`)
+
+#### Adding Support for Other File Types
+
+To enable Claude Code integration for additional file types, edit the `claude-code-extension/extension.toml` file:
+
+```toml
+[language_servers.claude-code-server]
+name = "Claude Code Server"
+languages = ["Rust", "JavaScript", "TypeScript", "Python", "Markdown", "Go", "Java"]
+
+[language_servers.claude-code-server.language_ids]
+"Rust" = "rust"
+"JavaScript" = "javascript"
+"TypeScript" = "typescript"
+"Python" = "python"
+"Markdown" = "markdown"
+"Go" = "go"
+"Java" = "java"
+```
+
+After modifying the configuration, reinstall extention and restart Zed for the changes to take effect.
+
 ## Architecture Overview
 
 This project consists of two components:
@@ -35,37 +96,6 @@ This project consists of two components:
   - Authentication token handling
   - JSON-RPC protocol implementation
   - Bridging between Zed extension and Claude Code CLI
-
-## Installation
-
-### Prerequisites
-- Rust toolchain installed
-- Zed editor
-- Claude Code CLI
-
-### Setup
-
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/your-repo/claude-code-zed
-   cd claude-code-zed
-   ```
-
-2. **Build the Zed extension**:
-   ```bash
-   cargo build --release
-   ```
-
-3. **Install companion server** (separate repository):
-   ```bash
-   git clone https://github.com/your-repo/claude-code-server
-   cd claude-code-server
-   cargo install --path .
-   ```
-
-4. **Install Zed extension**:
-   - Copy the built extension to your Zed extensions directory
-   - Or use Zed's extension manager (when available)
 
 ## How It Works
 
