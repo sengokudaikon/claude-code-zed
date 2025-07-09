@@ -2,6 +2,17 @@
 
 A two-part system that integrates Claude Code CLI with Zed editor for AI-assisted coding.
 
+## Current Integration Status
+
+### ✅ Working Features
+- **Text Selection Sharing**: Zed can send selected text context to Claude Code CLI
+- **File Reference Handling**: Selected code snippets and file paths are transmitted
+- **WebSocket Communication**: Stable connection between Zed and Claude Code CLI
+
+### 🚧 Limitations
+- **LSP Diagnostics**: Currently NOT implemented - Zed extension works as LSP client but doesn't expose IDE diagnostic information (errors, warnings, type hints) to Claude Code CLI
+- **One-way Communication**: Primary flow is Zed → Claude Code; limited Claude Code → Zed capabilities
+
 ## Architecture Overview
 
 This project consists of two components:
@@ -24,15 +35,6 @@ This project consists of two components:
   - Authentication token handling
   - JSON-RPC protocol implementation
   - Bridging between Zed extension and Claude Code CLI
-
-## Features
-
-- **Seamless Integration**: Works within Zed's WASM extension environment
-- **WebSocket Communication**: Native server handles Claude Code protocol
-- **Selection Tracking**: Real-time selection changes sent to Claude Code
-- **At-Mention Support**: File references and code selections forwarded to Claude
-- **Secure Authentication**: Token-based authentication between components
-- **Protocol Compliance**: Full Claude Code protocol implementation
 
 ## Installation
 
@@ -106,38 +108,3 @@ Zed Editor (WASM)  ←→  LSP  ←→  Native Server  ←→  WebSocket  ←→
 ### Messages from Zed to Claude Code
 
 - `selection_changed`: Notifies Claude when text selection changes
-- `at_mentioned`: Sends file references and code selections to Claude
-
-## Development
-
-### Debugging & Logs
-
-Both components include comprehensive logging:
-
-```bash
-# Run Zed in foreground mode to see extension logs
-zed --foreground
-
-# Run companion server with debug logging
-RUST_LOG=debug claude-code-server
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test with Zed
-5. Submit a pull request
-
-### Architecture Benefits
-
-This approach solves the WASM limitations by:
-- **WASM Extension**: Handles editor integration within Zed's sandbox
-- **Native Server**: Provides full system access for Claude Code protocol
-- **LSP Bridge**: Enables secure communication between components
-- **Separation of Concerns**: Each component focuses on its strengths
-
-## License
-
-MIT License - see LICENSE file for details
