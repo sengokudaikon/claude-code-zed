@@ -2,6 +2,8 @@
 
 A two-part system that integrates Claude Code CLI with Zed editor for AI-assisted coding.
 
+![File Selection Demo](docs/file-select.png)
+
 ## Current Integration Status
 
 ### ✅ Working Features
