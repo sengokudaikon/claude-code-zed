@@ -1,5 +1,7 @@
-use zed_extension_api::{lsp::*, http_client::*, *};
-use std::env;
+use zed_extension_api::{
+    current_platform, download_file, latest_github_release, lsp::*, make_file_executable,
+    Architecture, DownloadedFileType, GithubReleaseOptions, Os, *,
+};
 
 struct ClaudeCodeExtension;
 
@@ -117,9 +119,29 @@ fn find_server_binary(worktree: &Worktree) -> Result<String, String> {
 
     // For development: look for the binary in the workspace target directory
     if worktree_root.contains("claude-code-zed") {
-        let dev_binary_path = format!("{}/target/debug/claude-code-server", worktree_root);
-        eprintln!("🔍 [DEBUG] Using development binary path: {}", dev_binary_path);
-        return Ok(dev_binary_path);
+        // First try release binary, then debug binary
+        let release_binary_path = format!("{}/target/release/claude-code-server", worktree_root);
+        let debug_binary_path = format!("{}/target/debug/claude-code-server", worktree_root);
+
+        // Check if release binary exists and is executable
+        if std::path::Path::new(&release_binary_path).exists() {
+            eprintln!(
+                "🔍 [DEBUG] Using development release binary: {}",
+                release_binary_path
+            );
+            return Ok(release_binary_path);
+        }
+
+        // Fall back to debug binary
+        if std::path::Path::new(&debug_binary_path).exists() {
+            eprintln!(
+                "🔍 [DEBUG] Using development debug binary: {}",
+                debug_binary_path
+            );
+            return Ok(debug_binary_path);
+        }
+
+        eprintln!("⚠️ [WARNING] No built binary found in target directory");
     }
 
     // For production: download binary from GitHub releases
@@ -129,38 +151,90 @@ fn find_server_binary(worktree: &Worktree) -> Result<String, String> {
 /// Download claude-code-server binary from GitHub releases
 fn download_server_binary() -> Result<String, String> {
     const GITHUB_REPO: &str = "jiahaoxiang2000/claude-code-zed";
-    const BINARY_VERSION: &str = "latest";
-    
+
+    eprintln!("🔍 [DEBUG] Starting GitHub release download process");
+
     // Determine platform-specific binary name
-    let binary_name = get_platform_binary_name()?;
-    
-    // Check if binary already exists in cache
-    let cache_dir = format!("{}/.claude-code-zed", env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()));
-    let cached_binary_path = format!("{}/{}", cache_dir, binary_name);
-    
-    eprintln!("🔍 [DEBUG] Checking for cached binary at: {}", cached_binary_path);
-    
-    // For now, we'll use the cached path if it exists conceptually
-    // In a real implementation, we'd check file existence here
-    // Since we're in WASM, we'll attempt to download via zed-api
-    
-    let download_url = format!(
-        "https://github.com/{}/releases/{}/download/{}", 
-        GITHUB_REPO, 
-        BINARY_VERSION, 
-        binary_name
+    let binary_name = match get_platform_binary_name() {
+        Ok(name) => {
+            eprintln!("🔍 [DEBUG] Platform binary name: {}", name);
+            name
+        }
+        Err(e) => {
+            eprintln!("❌ [ERROR] Failed to determine platform binary name: {}", e);
+            return Err(e);
+        }
+    };
+
+    // Get the latest release from GitHub
+    eprintln!(
+        "🔍 [DEBUG] Fetching latest release from GitHub repo: {}",
+        GITHUB_REPO
     );
-    
-    eprintln!("📥 [INFO] Downloading claude-code-server from: {}", download_url);
-    
-    // Use zed-api to download the binary
-    match download_file(&download_url, &cached_binary_path) {
+    let release = latest_github_release(
+        GITHUB_REPO,
+        GithubReleaseOptions {
+            require_assets: true,
+            pre_release: false,
+        },
+    )
+    .map_err(|e| {
+        eprintln!("❌ [ERROR] Failed to fetch GitHub release: {}", e);
+        format!("Failed to get latest release: {}", e)
+    })?;
+
+    eprintln!(
+        "📥 [INFO] Found release {} with {} assets",
+        release.version,
+        release.assets.len()
+    );
+
+    // Log all available assets for debugging
+    eprintln!("🔍 [DEBUG] Available assets:");
+    for asset in &release.assets {
+        eprintln!("  - {}", asset.name);
+    }
+
+    // Find the asset that matches our platform
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == binary_name)
+        .ok_or_else(|| {
+            eprintln!("❌ [ERROR] Asset {} not found in release", binary_name);
+            eprintln!("🔍 [DEBUG] Looking for asset matching: {}", binary_name);
+            format!("Asset {} not found in release", binary_name)
+        })?;
+
+    eprintln!("✅ [SUCCESS] Found matching asset: {}", asset.name);
+    eprintln!("🔍 [DEBUG] Download URL: {}", asset.download_url);
+
+    // Download the binary to the extension's working directory
+    let local_path = binary_name.clone();
+    eprintln!("🔍 [DEBUG] Downloading to local path: {}", local_path);
+
+    match download_file(
+        &asset.download_url,
+        &local_path,
+        DownloadedFileType::Uncompressed,
+    ) {
         Ok(_) => {
-            eprintln!("✅ [SUCCESS] Binary downloaded to: {}", cached_binary_path);
-            Ok(cached_binary_path)
+            eprintln!("✅ [SUCCESS] Binary downloaded to: {}", local_path);
+
+            // Make the binary executable
+            eprintln!("🔍 [DEBUG] Making binary executable: {}", local_path);
+            make_file_executable(&local_path).map_err(|e| {
+                eprintln!("❌ [ERROR] Failed to make binary executable: {}", e);
+                format!("Failed to make binary executable: {}", e)
+            })?;
+
+            eprintln!("✅ [SUCCESS] Binary is now executable");
+            Ok(local_path)
         }
         Err(e) => {
             eprintln!("❌ [ERROR] Failed to download binary: {}", e);
+            eprintln!("🔍 [DEBUG] Download error details: {}", e);
+
             // Fallback to system PATH
             eprintln!("🔄 [FALLBACK] Using system binary: claude-code-server");
             Ok("claude-code-server".to_string())
@@ -170,65 +244,15 @@ fn download_server_binary() -> Result<String, String> {
 
 /// Get platform-specific binary name for GitHub releases
 fn get_platform_binary_name() -> Result<String, String> {
-    let os = env::consts::OS;
-    let arch = env::consts::ARCH;
-    
-    match (os, arch) {
-        ("linux", "x86_64") => Ok("claude-code-server-linux-x86_64".to_string()),
-        ("macos", "x86_64") => Ok("claude-code-server-macos-x86_64".to_string()),
-        ("macos", "aarch64") => Ok("claude-code-server-macos-aarch64".to_string()),
-        _ => Err(format!("Unsupported platform: {}-{}", os, arch)),
-    }
-}
+    // Use Zed's platform detection instead of env::consts which returns wasm32
+    let (os, arch) = current_platform();
 
-/// Download a file using zed-api HTTP client
-fn download_file(url: &str, destination: &str) -> Result<(), String> {
-    eprintln!("🌐 [HTTP] Downloading {} to {}", url, destination);
-    
-    // Create HTTP request
-    let request = HttpRequest {
-        method: HttpMethod::Get,
-        url: url.to_string(),
-        headers: vec![
-            ("User-Agent".to_string(), "claude-code-zed-extension/0.1.0".to_string()),
-        ],
-        body: None,
-        redirect_policy: RedirectPolicy::FollowAll,
-    };
-    
-    // Make HTTP request
-    let response = fetch(&request)
-        .map_err(|e| format!("HTTP request failed: {}", e))?;
-    
-    // Check if response has content (assuming successful download if we have body data)
-    if response.body.is_empty() {
-        return Err("Empty response body".to_string());
-    }
-    
-    // Create cache directory if it doesn't exist
-    let cache_dir = destination.rsplit('/').skip(1).collect::<Vec<_>>().join("/");
-    if !cache_dir.is_empty() {
-        // Note: In WASM, we can't create directories directly
-        // This would need to be handled by the host environment
-        eprintln!("📁 [INFO] Cache directory: {}", cache_dir);
-    }
-    
-    // Write binary data to destination
-    // Note: In a real implementation, you would use filesystem APIs
-    // For now, we'll simulate successful download
-    eprintln!("💾 [INFO] Writing {} bytes to {}", response.body.len(), destination);
-    
-    // In a real implementation, you would:
-    // 1. Use filesystem APIs to write response.body to destination
-    // 2. Set executable permissions on Unix systems
-    // 3. Verify the downloaded file
-    
-    // For demonstration, we'll simulate success
-    if response.body.len() > 0 {
-        eprintln!("✅ [SUCCESS] Binary downloaded successfully");
-        Ok(())
-    } else {
-        Err("Empty response body".to_string())
+    match (os, arch) {
+        (Os::Mac, Architecture::Aarch64) => Ok("claude-code-server-macos-aarch64".to_string()),
+        (Os::Mac, Architecture::X8664) => Ok("claude-code-server-macos-x86_64".to_string()),
+        (Os::Linux, Architecture::X8664) => Ok("claude-code-server-linux-x86_64".to_string()),
+        (Os::Windows, _) => Err("Windows is not currently supported".to_string()),
+        (os, arch) => Err(format!("Unsupported platform: {:?}-{:?}", os, arch)),
     }
 }
 
