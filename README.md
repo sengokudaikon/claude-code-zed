@@ -34,7 +34,7 @@ A two-part system that integrates Claude Code CLI with Zed editor for AI-assiste
    - The extension will be installed and activated automatically
 
 3. **The claude-code-server is automatically downloaded**:
-   - The extension will automatically download the appropriate `claude-code-server` binary for your platform from GitHub releases
+   - The extension will automatically download the appropriate `claude-code-server` binary from GitHub releases
    - No manual build or installation of the server is required
    - The server binary is cached in the extension's working directory
 
