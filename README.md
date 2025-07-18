@@ -161,10 +161,11 @@ rustup target add wasm32-wasi
 #### Solution 2: Install the extension through Zed's extension manager (Recommended)
 Instead of installing from source, try installing the published extension:
 
-1. Open Zed editor
-2. Press `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Linux/Windows)
-3. Type "extensions" and select "zed: extensions"
-4. Search for "Claude Code" and install it directly
+- Open Zed editor
+- Press `Cmd+Shift+P` (macOS) or `Ctrl+Shift+P` (Linux/Windows) to open the command palette
+- Type "zed: install dev extension" and select it
+- Navigate to and select the `claude-code-extension` folder in your cloned repository
+- The extension will be installed and activated automatically
 
 #### Solution 3: Manual compilation check
 If you need to install from source, verify the extension compiles correctly:
