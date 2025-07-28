@@ -76,6 +76,45 @@ languages = ["Rust", "JavaScript", "TypeScript", "Python", "Markdown", "Go", "Ja
 
 After modifying the configuration, reinstall extention and restart Zed for the changes to take effect.
 
+## Usage
+
+Once the extension is installed, follow these steps to connect Claude Code CLI with Zed:
+
+### Connecting Claude Code to Zed
+
+1. **Open a supported file in Zed**: Create or open a file with one of the supported extensions (`.rs`, `.js`, `.ts`, `.tsx`, `.py`, `.md`)
+
+2. **Start Claude Code CLI**: Open your terminal and run:
+   ```bash
+   claude-code
+   ```
+
+3. **Enable IDE integration**: In Claude Code CLI, run:
+   ```
+   /ide
+   ```
+
+4. **Select the integration**: Choose `claude-code-server` from the menu that appears
+
+5. **Test the connection**: 
+   - Select some text in your Zed editor
+   - In Claude Code CLI, ask: "What did I select?"
+   - If connected properly, Claude should be able to see your selected text
+
+### What to Expect
+
+Once connected, you'll have:
+- **Text selection sharing**: Selected text in Zed is automatically available to Claude Code CLI
+- **File context**: Claude can see which file you're working in
+- **Real-time updates**: Changes in your selection are immediately reflected in Claude
+
+### Verifying the Connection
+
+To confirm everything is working:
+- Check for a lock file at `~/.claude/ide/[port].lock`
+- The Claude Code CLI will display IDE integration status
+- Text selections in Zed should be visible to Claude Code CLI
+
 ## Architecture Overview
 
 This project consists of two components:
