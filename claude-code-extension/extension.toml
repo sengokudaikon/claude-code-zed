@@ -6,6 +6,13 @@ authors = ["isomo <jiahaoxiang2000@gmail.com>"]
 description = "Integration with Claude Code CLI for AI-assisted coding in Zed"
 repository = "https://github.com/jiahaoxiang2000/claude-code-zed"
 
+# Development configuration
+[development]
+# Set to true to always use local development binaries instead of GitHub releases
+# This allows using local fixes without waiting for official releases
+# DEFAULT: false (production behavior - downloads from GitHub)
+force_development_mode = false
+
 [language_servers.claude-code-server]
 name = "Claude Code Server"
 languages = [
