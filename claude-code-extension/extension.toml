@@ -8,13 +8,27 @@ repository = "https://github.com/jiahaoxiang2000/claude-code-zed"
 
 [language_servers.claude-code-server]
 name = "Claude Code Server"
-languages = ["Rust", "Ruby", "JavaScript", "TypeScript", "Python", "Markdown", "LaTeX", "Typst", "Elixir", "Erlang", "Kotlin"]
+languages = [
+    "Rust",
+    "Ruby",
+    "JavaScript",
+    "TypeScript",
+    "TSX",
+    "Python",
+    "Markdown",
+    "LaTeX",
+    "Typst",
+    "Elixir",
+    "Erlang",
+    "Kotlin",
+]
 
 [language_servers.claude-code-server.language_ids]
 "Rust" = "rust"
 "Ruby" = "ruby"
 "JavaScript" = "javascript"
 "TypeScript" = "typescript"
+"TSX" = "tsx"
 "Python" = "python"
 "Markdown" = "markdown"
 "LaTeX" = "latex"
