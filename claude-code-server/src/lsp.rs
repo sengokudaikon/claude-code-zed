@@ -85,6 +85,34 @@ impl ClaudeCodeLanguageServer {
         }
     }
 
+    // Convert LSP UTF-16 code unit position to Rust UTF-8 byte position
+    // LSP uses UTF-16 code units for character positions per the specification
+    fn char_pos_to_byte_pos(line: &str, utf16_pos: usize) -> Option<usize> {
+        let mut current_utf16_pos = 0;
+        
+        for (byte_pos, ch) in line.char_indices() {
+            if current_utf16_pos == utf16_pos {
+                return Some(byte_pos);
+            }
+            
+            let char_utf16_len = ch.len_utf16();
+            
+            // If utf16_pos falls within this character's UTF-16 span, return this char's byte position
+            if utf16_pos < current_utf16_pos + char_utf16_len {
+                return Some(byte_pos);
+            }
+            
+            current_utf16_pos += char_utf16_len;
+        }
+        
+        // If utf16_pos is at the end of the string
+        if current_utf16_pos == utf16_pos {
+            return Some(line.len());
+        }
+        
+        None
+    }
+
     fn read_text_from_range(&self, file_path: &str, range: Range) -> String {
         let file_path = if file_path.starts_with("file://") {
             &file_path[7..] // Remove "file://" prefix
@@ -102,11 +130,12 @@ impl ClaudeCodeLanguageServer {
                         let start_char = range.start.character as usize;
                         let end_char = range.end.character as usize;
 
-                        if start_char < line.len()
-                            && end_char <= line.len()
-                            && start_char <= end_char
-                        {
-                            return line[start_char..end_char].to_string();
+                        if let (Some(start_byte), Some(end_byte)) = 
+                            (Self::char_pos_to_byte_pos(line, start_char),
+                             Self::char_pos_to_byte_pos(line, end_char)) {
+                            if start_byte <= end_byte {
+                                return line[start_byte..end_byte].to_string();
+                            }
                         }
                     }
                 } else {
@@ -118,14 +147,14 @@ impl ClaudeCodeLanguageServer {
                             if i == 0 {
                                 // First line - from start character to end
                                 let start_char = range.start.character as usize;
-                                if start_char < line.len() {
-                                    selected_text.push_str(&line[start_char..]);
+                                if let Some(start_byte) = Self::char_pos_to_byte_pos(line, start_char) {
+                                    selected_text.push_str(&line[start_byte..]);
                                 }
                             } else if line_index == range.end.line {
                                 // Last line - from start to end character
                                 let end_char = range.end.character as usize;
-                                if end_char <= line.len() {
-                                    selected_text.push_str(&line[..end_char]);
+                                if let Some(end_byte) = Self::char_pos_to_byte_pos(line, end_char) {
+                                    selected_text.push_str(&line[..end_byte]);
                                 }
                             } else {
                                 // Middle lines - entire line
