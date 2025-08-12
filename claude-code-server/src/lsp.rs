@@ -270,12 +270,7 @@ impl LanguageServer for ClaudeCodeLanguageServer {
             position.line, position.character
         );
 
-        Ok(Some(Hover {
-            contents: HoverContents::Scalar(MarkedString::String(
-                "Claude Code: AI-powered coding assistance available here".to_string(),
-            )),
-            range: None,
-        }))
+        Ok(None)
     }
 
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
