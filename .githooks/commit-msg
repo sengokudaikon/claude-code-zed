@@ -1,0 +1,44 @@
+#!/bin/sh
+
+# Conventional Commits validation hook
+# Ensures commit messages follow the pattern: type(scope?): description
+
+commit_regex='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9\-]+\))?: .{1,100}$'
+commit_msg=$(cat "$1")
+
+# Check if commit message matches conventional commits format
+if ! echo "$commit_msg" | grep -qE "$commit_regex"; then
+    echo "Commit message does not follow Conventional Commits format!"
+    echo ""
+    echo "Valid format: <type>(<optional scope>): <description>"
+    echo ""
+    echo "Allowed types:"
+    echo "  feat     - New feature"
+    echo "  fix      - Bug fix"
+    echo "  docs     - Documentation changes"
+    echo "  style    - Code style/formatting (no logic change)"
+    echo "  refactor - Code refactoring (no feature/fix)"
+    echo "  perf     - Performance improvements"
+    echo "  test     - Adding/updating tests"
+    echo "  build    - Build system/dependency changes"
+    echo "  ci       - CI/CD changes"
+    echo "  chore    - Maintenance tasks"
+    echo "  revert   - Revert a previous commit"
+    echo ""
+    echo "Examples:"
+    echo "  feat: add user authentication"
+    echo "  fix(server): resolve port binding issue"
+    echo "  docs: update API documentation"
+    echo ""
+    echo "Your commit message:"
+    echo "  $commit_msg"
+    echo ""
+    exit 1
+fi
+
+# Check commit message length (should be <= 100 chars for first line)
+first_line=$(echo "$commit_msg" | head -n1)
+if [ ${#first_line} -gt 100 ]; then
+    echo "Warning: First line of commit message is too long (${#first_line} chars, max 100)"
+    echo "Consider making it more concise."
+fi
